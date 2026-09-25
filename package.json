@@ -1,0 +1,14 @@
+{
+  "name": "vernietigingscockpit-stekker-test",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "start": "node src/index.js",
+    "test": "node test/run-tests.js",
+    "test:sequence": "node test/cockpit-sequence.test.js"
+  },
+  "engines": {
+    "node": ">=22"
+  }
+}
