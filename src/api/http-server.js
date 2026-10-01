@@ -1,6 +1,7 @@
 import http from 'node:http';
 import { SelectieNogNietGereedError } from '../application/selectie-service.js';
 import { ConflictError, ResourceNotFoundError, ValidationError } from '../application/vernietiging-service.js';
+import { stekkerConfig } from '../config/stekker-config.js';
 
 export function createHttpServer({ selectieService, vernietigingService }) {
   return http.createServer(async (request, response) => {
@@ -8,7 +9,13 @@ export function createHttpServer({ selectieService, vernietigingService }) {
       const url = new URL(request.url, `http://${request.headers.host ?? 'localhost'}`);
 
       if (request.method === 'GET' && url.pathname === '/health') {
-        return sendJson(response, 200, { status: 'ok' });
+        return sendJson(response, 200, {
+          status: 'ok',
+          naam: stekkerConfig.naam,
+          versie: stekkerConfig.versie,
+          configuratieversie: stekkerConfig.configuratieversie,
+          dataSource: stekkerConfig.dataSource.name
+        });
       }
 
       if (request.method === 'POST' && url.pathname === '/selecties') {

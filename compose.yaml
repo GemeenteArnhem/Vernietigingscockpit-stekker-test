@@ -1,0 +1,45 @@
+services:
+  teststekker:
+    build: .
+    image: vernietigingscockpit-stekker-test:local
+    container_name: ${STEKKER_CONTAINER_NAME:-stekker-test}
+    environment:
+      PORT: "3000"
+      STEKKER_NAAM: "${STEKKER_NAAM:-CSV teststekker sociaal domein}"
+      STEKKER_OMSCHRIJVING: "${STEKKER_OMSCHRIJVING:-Teststekker voor fictieve sociaal-domein-zaken uit een CSV-bron.}"
+      STEKKER_CONFIGURATIEVERSIE: "${STEKKER_CONFIGURATIEVERSIE:-csv-sociaal-domein-2026-09-25}"
+      STEKKER_DATASOURCE_NAME: "${STEKKER_DATASOURCE_NAME:-sociaal-domein-zaken}"
+      STEKKER_CSV_PATH: "${STEKKER_CSV_PATH:-data/sociaal-domein-zaken.csv}"
+      STEKKER_RUNTIME_SELECTIES_PATH: "/app/runtime/selecties"
+      SELECTIE_PROCESSING_DELAY_MS: "${SELECTIE_PROCESSING_DELAY_MS:-3000}"
+    labels:
+      - "traefik.enable=true"
+      - "traefik.docker.network=${TRAEFIK_NETWORK:-traefik}"
+      - "traefik.http.routers.${TRAEFIK_ROUTER_NAME:-stekker-test}.rule=Host(`${STEKKER_DOMAIN:-stekker.localhost}`)"
+      - "traefik.http.routers.${TRAEFIK_ROUTER_NAME:-stekker-test}.entrypoints=${TRAEFIK_ENTRYPOINTS:-web}"
+      - "traefik.http.routers.${TRAEFIK_ROUTER_NAME:-stekker-test}.tls=${TRAEFIK_TLS:-false}"
+      - "traefik.http.routers.${TRAEFIK_ROUTER_NAME:-stekker-test}.tls.certresolver=${TRAEFIK_CERTRESOLVER:-}"
+      - "traefik.http.services.${TRAEFIK_SERVICE_NAME:-stekker-test}.loadbalancer.server.port=3000"
+    volumes:
+      - stekker-runtime:/app/runtime
+    networks:
+      - traefik
+    healthcheck:
+      test:
+        - CMD
+        - node
+        - -e
+        - "fetch('http://127.0.0.1:3000/health').then((response) => process.exit(response.ok ? 0 : 1)).catch(() => process.exit(1))"
+      interval: 10s
+      timeout: 3s
+      start_period: 5s
+      retries: 3
+
+volumes:
+  stekker-runtime:
+    name: ${STEKKER_RUNTIME_VOLUME:-stekker-test-runtime}
+
+networks:
+  traefik:
+    name: ${TRAEFIK_NETWORK:-traefik}
+    external: true

@@ -56,11 +56,26 @@ De selectie gebruikt standaard peildatum `2026-09-25`. Alleen records met `waard
 
 De default testset in `data/sociaal-domein-zaken.csv` wordt niet aangepast. Vernietiging kan straks plaatsvinden op de selectie-snapshot, zodat dezelfde bronset opnieuw gebruikt kan worden voor nieuwe selecties.
 
-De simulatievertraging is instelbaar met:
+De simulatievertraging en stekkermetadata zijn instelbaar via omgevingsvariabelen of een lokale `.env`.
+Begin bijvoorbeeld met:
 
 ```powershell
+Copy-Item .env.example .env
 $env:SELECTIE_PROCESSING_DELAY_MS = "3000"
 ```
+
+Ondersteunde configuratie:
+
+| Variabele | Standaard |
+| --- | --- |
+| `PORT` | `3000` |
+| `STEKKER_NAAM` | `CSV teststekker sociaal domein` |
+| `STEKKER_OMSCHRIJVING` | `Teststekker voor fictieve sociaal-domein-zaken uit een CSV-bron.` |
+| `STEKKER_CONFIGURATIEVERSIE` | `csv-sociaal-domein-2026-09-25` |
+| `STEKKER_DATASOURCE_NAME` | `sociaal-domein-zaken` |
+| `STEKKER_CSV_PATH` | `data/sociaal-domein-zaken.csv` |
+| `STEKKER_RUNTIME_SELECTIES_PATH` | `runtime/selecties` |
+| `SELECTIE_PROCESSING_DELAY_MS` | `3000` |
 
 ## Vernietigingsflow
 
@@ -72,7 +87,9 @@ Vernietiging werkt op de selectie-snapshot, niet op de default testset.
 4. `GET /vernietigingen/{vernietigingId}` geeft de uitvoeringstatus en tellingen terug.
 5. `GET /vernietigingen/{vernietigingId}/resultaten?offset=0&limit=100` levert resultaten per kandidaat.
 
-Bij succesvolle vernietiging worden de betreffende records in `runtime/selecties/{selectieId}/bron-snapshot.csv` gemarkeerd met `bronstatus = VERNIETIGD` en `statusVernietigingskandidaat = VERNIETIGD`. Een tweede vernietigingspoging op hetzelfde snapshotrecord levert daardoor `NOT_FOUND` op.
+Bij succesvolle vernietiging worden de betreffende records in `runtime/selecties/{selectieId}/bron-snapshot.csv` gemarkeerd met `bronstatus = VERNIETIGD` en `statusVernietigingskandidaat = VERNIETIGD`. Een tweede vernietigingspoging binnen dezelfde selectie op hetzelfde snapshotrecord levert daardoor `NOT_FOUND` op.
+
+Een volgende `POST /selecties` kopieert opnieuw de ingestelde bron-CSV naar een nieuwe interne snapshot. De bron-CSV zelf wordt niet aangepast, dus kandidaten die in een eerdere selectie-snapshot zijn vernietigd, komen in een nieuwe selectie opnieuw uit de bron als die bron nog `SELECTED`/`ONVERANDERD` bevat.
 
 ## Lokaal draaien
 
@@ -83,6 +100,46 @@ npm start
 ```
 
 De API luistert standaard op `http://localhost:3000`.
+
+## Docker
+
+Bouw en start een losse container zonder Traefik:
+
+```powershell
+docker build -t vernietigingscockpit-stekker-test:local .
+docker run --rm -p 3000:3000 --env-file .env --name stekker-sociaal vernietigingscockpit-stekker-test:local
+```
+
+Of gebruik compose via Traefik:
+
+```powershell
+Copy-Item .env.example .env
+docker compose up --build
+```
+
+`compose.yaml` publiceert geen hostpoort. De service wordt via Traefik bereikbaar op `STEKKER_DOMAIN`, op de externe Docker-network `TRAEFIK_NETWORK`. Die network moet dezelfde zijn als waar je bestaande Traefik-container op luistert.
+
+Voor meerdere teststekkers maak je per instantie een eigen env-bestand of map met ten minste een andere containernaam, domein, routernaam, servicenaam, stekkernaam en runtime-volume:
+
+```dotenv
+STEKKER_NAAM=CSV teststekker sociaal domein A
+STEKKER_CONTAINER_NAME=stekker-sociaal-a
+STEKKER_RUNTIME_VOLUME=stekker-sociaal-a-runtime
+TRAEFIK_NETWORK=traefik
+TRAEFIK_ROUTER_NAME=stekker-sociaal-a
+TRAEFIK_SERVICE_NAME=stekker-sociaal-a
+STEKKER_DOMAIN=stekker-sociaal-a.example.test
+TRAEFIK_ENTRYPOINTS=websecure
+TRAEFIK_TLS=true
+TRAEFIK_CERTRESOLVER=letsencrypt
+```
+
+```powershell
+docker compose --env-file .env.sociaal-a -p stekker-sociaal-a up --build
+docker compose --env-file .env.sociaal-b -p stekker-sociaal-b up --build
+```
+
+De container bewaart selectie-snapshots onder `/app/runtime/selecties`. In compose staat daar standaard een named volume onder, zodat elke instantie zijn eigen interne snapshots kan houden.
 
 `npm run test:sequence` simuleert een minimale Cockpit via HTTP. Het script start zelf een tijdelijke stekker, voert de volledige sequence uit en sluit de stekker daarna weer:
 
