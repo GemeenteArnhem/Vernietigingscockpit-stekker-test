@@ -1,9 +1,11 @@
 import path from 'node:path';
-import fs from 'node:fs';
 import { fileURLToPath } from 'node:url';
+import { parseAuthConfig } from './auth-config.js';
+import { parseScenario } from './scenario-config.js';
 
+// .env wordt alleen door het opstartpunt (src/index.js) ingelezen, zodat tests
+// nooit afhangen van een lokale .env.
 const rootDir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
-loadEnvFile(path.join(rootDir, '.env'));
 
 export const stekkerConfig = {
   naam: process.env.STEKKER_NAAM || 'CSV teststekker sociaal domein',
@@ -13,8 +15,17 @@ export const stekkerConfig = {
   configuratieversie: process.env.STEKKER_CONFIGURATIEVERSIE || 'csv-sociaal-domein-2026-09-25',
   defaultPeildatum: process.env.STEKKER_DEFAULT_PEILDATUM || '2026-09-25',
   selectieProcessingDelayMs: Number.parseInt(process.env.SELECTIE_PROCESSING_DELAY_MS || '3000', 10),
+  vernietigingProcessingDelayMs: Number.parseInt(process.env.VERNIETIGING_PROCESSING_DELAY_MS || '1000', 10),
+  idempotencyKeyRequired: process.env.IDEMPOTENCY_KEY_REQUIRED === 'true',
+  maxBodyBytes: Number.parseInt(process.env.MAX_BODY_BYTES || '1048576', 10),
+  logRequests: process.env.LOG_REQUESTS !== 'false',
+  scenario: parseScenario(process.env),
+  auth: parseAuthConfig(process.env),
   runtime: {
-    selectiesPath: resolveFromRoot(process.env.STEKKER_RUNTIME_SELECTIES_PATH || path.join('runtime', 'selecties'))
+    selectiesPath: resolveFromRoot(process.env.STEKKER_RUNTIME_SELECTIES_PATH || path.join('runtime', 'selecties')),
+    vernietigingenPath: resolveFromRoot(process.env.STEKKER_RUNTIME_VERNIETIGINGEN_PATH || path.join('runtime', 'vernietigingen')),
+    idempotencyPath: resolveFromRoot(process.env.STEKKER_RUNTIME_IDEMPOTENCY_PATH || path.join('runtime', 'idempotency')),
+    lockPath: resolveFromRoot(process.env.STEKKER_RUNTIME_LOCK_PATH || path.join('runtime', 'instance.lock'))
   },
   dataSource: {
     type: 'csv',
@@ -29,44 +40,4 @@ export const serverConfig = {
 
 function resolveFromRoot(configuredPath) {
   return path.isAbsolute(configuredPath) ? configuredPath : path.join(rootDir, configuredPath);
-}
-
-function loadEnvFile(envPath) {
-  if (!fs.existsSync(envPath)) {
-    return;
-  }
-
-  const envText = fs.readFileSync(envPath, 'utf8');
-
-  for (const line of envText.split(/\r?\n/)) {
-    const trimmed = line.trim();
-
-    if (!trimmed || trimmed.startsWith('#')) {
-      continue;
-    }
-
-    const separatorIndex = trimmed.indexOf('=');
-
-    if (separatorIndex === -1) {
-      continue;
-    }
-
-    const key = trimmed.slice(0, separatorIndex).trim();
-    const value = unquoteEnvValue(trimmed.slice(separatorIndex + 1).trim());
-
-    if (key && process.env[key] === undefined) {
-      process.env[key] = value;
-    }
-  }
-}
-
-function unquoteEnvValue(value) {
-  if (
-    (value.startsWith('"') && value.endsWith('"'))
-    || (value.startsWith("'") && value.endsWith("'"))
-  ) {
-    return value.slice(1, -1);
-  }
-
-  return value;
 }

@@ -1,2 +1,10 @@
 import './selectie-service.test.js';
 import './vernietiging-service.test.js';
+import './contract/stekker-contract.test.js';
+import './cockpit-sequence.test.js';
+import './http-server.test.js';
+import './scenario.test.js';
+import './persistentie.test.js';
+import './jwt-auth.test.js';
+import './testdata.test.js';
+import './runtime-lock.test.js';

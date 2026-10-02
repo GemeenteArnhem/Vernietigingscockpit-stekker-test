@@ -1,0 +1,851 @@
+openapi: 3.0.3
+info:
+  title: Stekker API
+  version: 1.0.0
+  license:
+    name: EUPL-1.2
+    url: https://joinup.ec.europa.eu/collection/eupl/eupl-text-eupl-12
+  description: |
+    API voor selectie van vernietigingskandidaten en uitvoering van vernietiging.
+    Ontworpen conform API Design Rules (ADR), Common Ground en NeRDS-leidraad.
+
+servers:
+  - url: https://api.voorbeeld.nl
+
+security:
+  - oauth2:
+      - selectie.read
+      - selectie.write
+      - vernietiging.read
+      - vernietiging.write
+
+paths:
+  /selecties:
+    post:
+      summary: Start een nieuwe selectie
+      operationId: startSelectie
+      security:
+        - oauth2: [selectie.write]
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SelectieStart'
+      responses:
+        '202':
+          description: Selectie gestart
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Selectie'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+
+  /selecties/{selectieId}:
+    get:
+      summary: Haal de status en metadata van een selectie op
+      operationId: getSelectie
+      security:
+        - oauth2: [selectie.read]
+      parameters:
+        - $ref: '#/components/parameters/SelectieId'
+      responses:
+        '200':
+          description: Selectie
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Selectie'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+
+  /selecties/{selectieId}/objecten:
+    get:
+      summary: Haal vernietigingskandidaten uit een selectie op
+      operationId: getVernietigingskandidaten
+      security:
+        - oauth2: [selectie.read]
+      parameters:
+        - $ref: '#/components/parameters/SelectieId'
+        - $ref: '#/components/parameters/Offset'
+        - $ref: '#/components/parameters/Limit'
+        - $ref: '#/components/parameters/Cursor'
+      responses:
+        '200':
+          description: Pagina met vernietigingskandidaten
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/VernietigingskandidatenPagina'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+
+  /vernietigingen:
+    post:
+      summary: Start een nieuwe vernietigingsuitvoering
+      operationId: startVernietiging
+      security:
+        - oauth2: [vernietiging.write]
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/VernietigingStart'
+      responses:
+        '202':
+          description: Vernietigingsuitvoering aangemaakt of ingepland
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Vernietigingsuitvoering'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+
+  /vernietigingen/{vernietigingId}:
+    get:
+      summary: Haal de status van een vernietigingsuitvoering op
+      operationId: getVernietiging
+      security:
+        - oauth2: [vernietiging.read]
+      parameters:
+        - $ref: '#/components/parameters/VernietigingId'
+      responses:
+        '200':
+          description: Status van vernietigingsuitvoering
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Vernietigingsuitvoering'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+
+  /vernietigingen/{vernietigingId}/batches:
+    post:
+      summary: Bied een batch informatieobjecten ter vernietiging aan
+      operationId: verwerkVernietigingBatch
+      security:
+        - oauth2: [vernietiging.write]
+      parameters:
+        - $ref: '#/components/parameters/VernietigingId'
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/VernietigingBatch'
+      responses:
+        '202':
+          description: Batch ontvangen
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BatchResultaat'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+    get:
+      summary: Haal alle batchresultaten van een vernietigingsuitvoering op
+      operationId: getBatchResultaten
+      security:
+        - oauth2: [vernietiging.read]
+      parameters:
+        - $ref: '#/components/parameters/VernietigingId'
+      responses:
+        '200':
+          description: Lijst met batchresultaten
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/BatchResultaat'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+
+  /vernietigingen/{vernietigingId}/vrijgeven:
+    post:
+      summary: Geef een vernietigingsuitvoering vrij voor technische uitvoering
+      operationId: geefVernietigingVrij
+      security:
+        - oauth2: [vernietiging.write]
+      parameters:
+        - $ref: '#/components/parameters/VernietigingId'
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/VernietigingVrijgave'
+      responses:
+        '202':
+          description: Vernietigingsuitvoering vrijgegeven voor technische uitvoering
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Vernietigingsuitvoering'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+
+  /vernietigingen/{vernietigingId}/batches/{batchNummer}:
+    get:
+      summary: Haal het resultaat van een specifieke batch op
+      operationId: getBatchResultaat
+      security:
+        - oauth2: [vernietiging.read]
+      parameters:
+        - $ref: '#/components/parameters/VernietigingId'
+        - $ref: '#/components/parameters/BatchNummer'
+      responses:
+        '200':
+          description: Resultaat van batch
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BatchResultaat'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+
+components:
+  responses:
+    BadRequest:
+      description: Ongeldige of onvolledige request.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Fout'
+
+    Unauthorized:
+      description: Authenticatie ontbreekt of is ongeldig.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Fout'
+
+    Forbidden:
+      description: De client is niet geautoriseerd voor deze actie.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Fout'
+
+    NotFound:
+      description: De gevraagde resource bestaat niet of is niet beschikbaar voor deze client.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Fout'
+
+    Conflict:
+      description: De request conflicteert met de actuele resource-status of eerdere idempotente aanlevering.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Fout'
+
+    InternalServerError:
+      description: Onverwachte technische fout.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Fout'
+
+  parameters:
+    SelectieId:
+      in: path
+      name: selectieId
+      required: true
+      schema:
+        type: string
+      description: Stabiele identificatie van de selectie binnen de Stekker.
+
+    VernietigingId:
+      in: path
+      name: vernietigingId
+      required: true
+      schema:
+        type: string
+      description: Stabiele identificatie van de vernietigingsuitvoering binnen de Stekker.
+
+    BatchNummer:
+      in: path
+      name: batchNummer
+      required: true
+      schema:
+        type: integer
+        minimum: 1
+      description: Nummer van de technische batch binnen een vernietigingsuitvoering.
+
+    Offset:
+      in: query
+      name: offset
+      required: false
+      schema:
+        type: integer
+        minimum: 0
+        default: 0
+
+    Limit:
+      in: query
+      name: limit
+      required: false
+      schema:
+        type: integer
+        minimum: 1
+        maximum: 500
+        default: 100
+
+    Cursor:
+      in: query
+      name: cursor
+      required: false
+      schema:
+        type: string
+      description: Optioneel alternatief voor offset-based paginering.
+
+    IdempotencyKey:
+      in: header
+      name: Idempotency-Key
+      required: false
+      schema:
+        type: string
+      description: Optioneel client-id voor veilige retries van muterende requests.
+
+  securitySchemes:
+    oauth2:
+      type: oauth2
+      flows:
+        clientCredentials:
+          tokenUrl: https://auth.voorbeeld.nl/oauth/token
+          scopes:
+            selectie.read: Lezen van selecties en vernietigingskandidaten
+            selectie.write: Starten van selecties
+            vernietiging.read: Lezen van vernietigingsstatussen en resultaten
+            vernietiging.write: Starten van vernietiging en aanbieden van batches
+
+  schemas:
+    SelectieStart:
+      type: object
+      description: Optionele parameters voor het starten van een selectie.
+      properties:
+        peildatum:
+          type: string
+          format: date
+          description: Datum waarop selectieregels moeten worden toegepast.
+
+    Selectie:
+      type: object
+      required:
+        - selectieId
+        - status
+      properties:
+        selectieId:
+          type: string
+        peildatum:
+          type: string
+          format: date
+        selectietijdstip:
+          type: string
+          format: date-time
+        status:
+          $ref: '#/components/schemas/SelectieStatus'
+        totaalKandidaten:
+          type: integer
+          minimum: 0
+        totaalObjecten:
+          type: integer
+          minimum: 0
+        totaalBetrokkenen:
+          type: integer
+          minimum: 0
+        stekkerNaam:
+          type: string
+        stekkerOmschrijving:
+          type: string
+        stekkerversie:
+          type: string
+        configuratieversie:
+          type: string
+        apiVersie:
+          type: string
+        aantalWaarschuwingen:
+          type: integer
+          minimum: 0
+        aantalFouten:
+          type: integer
+          minimum: 0
+      example:
+        selectieId: sel-2026-001
+        peildatum: '2026-09-23'
+        selectietijdstip: '2026-09-23T09:30:00Z'
+        status: READY
+        totaalKandidaten: 126
+        totaalObjecten: 892
+        totaalBetrokkenen: 74
+        stekkerNaam: SociaalDomeinStekker
+        stekkerversie: 1.4.2
+        configuratieversie: '2026.09'
+        apiVersie: 1.0.0
+        aantalWaarschuwingen: 0
+        aantalFouten: 0
+
+    Vernietigingskandidaat:
+      type: object
+      required:
+        - vernietigingskandidaatId
+        - bronId
+        - omschrijving
+      properties:
+        vernietigingskandidaatId:
+          type: string
+          description: Stabiele identificatie van de vernietigingskandidaat over selectie, beoordeling, vernietiging en resultaatverwerking.
+        omschrijving:
+          type: string
+        classificatieschema:
+          type: string
+        classificatiesleutel:
+          type: string
+        classificatieomschrijving:
+          type: string
+        selectielijst:
+          type: string
+        grondslag:
+          type: string
+        grondslagAfwijkend:
+          type: string
+        resultaat:
+          type: string
+        bewaartermijn:
+          type: string
+        waardering:
+          $ref: '#/components/schemas/Waardering'
+        begindatum:
+          type: string
+          format: date
+        einddatum:
+          type: string
+          format: date
+        vernietigingsdatum:
+          type: string
+          format: date
+        aantalObjecten:
+          type: integer
+          minimum: 0
+        aantalBetrokkenen:
+          type: integer
+          minimum: 0
+        bronIdNaam:
+          type: string
+          description: Gebruikersherkenbare naam of aanduiding van het object, zoals zaaknummer, dossiernummer of documentnaam.
+        bronId:
+          type: string
+          description: Technische sleutel waarmee de Stekker het object in de bron kan terugvinden en vernietigen.
+        relatieType:
+          type: string
+        relatieId:
+          type: string
+        statusVernietigingskandidaat:
+          type: string
+        uitvoeringsresultaat:
+          $ref: '#/components/schemas/UitvoeringsresultaatWaarde'
+        foutcode:
+          type: string
+        foutmelding:
+          type: string
+        bronstatus:
+          type: string
+        toelichting:
+          type: string
+      example:
+        vernietigingskandidaatId: kandidaat-000123
+        omschrijving: Dossier handhaving 2020
+        classificatieschema: BAC
+        classificatiesleutel: 3.6.2
+        classificatieomschrijving: Handhaving
+        selectielijst: Selectielijst 2020
+        grondslag: 3.6.2
+        resultaat: Afgehandeld
+        bewaartermijn: P5Y
+        waardering: VERNIETIGEN
+        begindatum: '2020-01-01'
+        einddatum: '2020-12-31'
+        vernietigingsdatum: '2026-01-01'
+        aantalObjecten: 4
+        aantalBetrokkenen: 1
+        bronIdNaam: dossiernummer
+        bronId: DSR-2020-123
+        statusVernietigingskandidaat: SELECTED
+
+    VernietigingskandidatenPagina:
+      type: object
+      required:
+        - selectieId
+        - items
+      properties:
+        selectieId:
+          type: string
+        offset:
+          type: integer
+          minimum: 0
+        limit:
+          type: integer
+          minimum: 1
+          maximum: 500
+        cursor:
+          type: string
+        nextCursor:
+          type: string
+        totaal:
+          type: integer
+          minimum: 0
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/Vernietigingskandidaat'
+
+    VernietigingStart:
+      type: object
+      required:
+        - selectieId
+        - cockpitTaakId
+        - besluitReferentie
+      properties:
+        selectieId:
+          type: string
+          description: Selectie waarop de vernietigingsuitvoering is gebaseerd.
+        scope:
+          type: string
+          description: Scope van de vernietiging zoals door de Cockpit is vrijgegeven.
+        cockpitTaakId:
+          type: string
+          description: Verwijzing naar de Cockpit-taak voor herleidbaarheid.
+        vernietigingsdossierId:
+          type: string
+          description: Verwijzing naar het vernietigingsdossier in de Cockpit.
+        besluitReferentie:
+          type: string
+          description: Verwijzing naar het genomen besluit of de vrijgave.
+      example:
+        selectieId: sel-2026-001
+        scope: Alleen door de Cockpit vrijgegeven kandidaten
+        cockpitTaakId: taak-2026-042
+        vernietigingsdossierId: dossier-2026-042-v1
+        besluitReferentie: besluit-archivaris-2026-042
+
+    VernietigingVrijgave:
+      type: object
+      required:
+        - aantalBatches
+        - aantalKandidaten
+      properties:
+        aantalBatches:
+          type: integer
+          minimum: 1
+          description: Aantal batches dat de Cockpit heeft aangeleverd voor deze vernietiging.
+        aantalKandidaten:
+          type: integer
+          minimum: 1
+          description: Aantal vrijgegeven vernietigingskandidaten dat in de batches is aangeleverd.
+      example:
+        aantalBatches: 3
+        aantalKandidaten: 120
+
+    Vernietigingsuitvoering:
+      type: object
+      required:
+        - vernietigingId
+        - selectieId
+        - status
+      properties:
+        vernietigingId:
+          type: string
+        selectieId:
+          type: string
+        cockpitTaakId:
+          type: string
+        vernietigingsdossierId:
+          type: string
+        besluitReferentie:
+          type: string
+        status:
+          $ref: '#/components/schemas/VernietigingStatus'
+        starttijd:
+          type: string
+          format: date-time
+        eindtijd:
+          type: string
+          format: date-time
+        totaalKandidaten:
+          type: integer
+          minimum: 0
+        totaalObjecten:
+          type: integer
+          minimum: 0
+        totaalBatches:
+          type: integer
+          minimum: 0
+        ontvangenBatches:
+          type: integer
+          minimum: 0
+        succesvolVernietigd:
+          type: integer
+          minimum: 0
+        mislukt:
+          type: integer
+          minimum: 0
+        overgeslagen:
+          type: integer
+          minimum: 0
+        gewijzigd:
+          type: integer
+          minimum: 0
+        nietGevonden:
+          type: integer
+          minimum: 0
+        stekkerNaam:
+          type: string
+        stekkerOmschrijving:
+          type: string
+        stekkerversie:
+          type: string
+        configuratieversie:
+          type: string
+        aantalBatches:
+          type: integer
+          minimum: 0
+        aantalWaarschuwingen:
+          type: integer
+          minimum: 0
+        aantalFouten:
+          type: integer
+          minimum: 0
+      example:
+        vernietigingId: vernietiging-2026-001
+        selectieId: sel-2026-001
+        cockpitTaakId: taak-2026-042
+        vernietigingsdossierId: dossier-2026-042-v1
+        besluitReferentie: besluit-archivaris-2026-042
+        status: RUNNING
+        totaalKandidaten: 120
+        totaalObjecten: 850
+        totaalBatches: 3
+        ontvangenBatches: 3
+        aantalBatches: 3
+
+    VernietigingBatch:
+      type: object
+      required:
+        - batchNummer
+        - objecten
+      properties:
+        batchNummer:
+          type: integer
+          minimum: 1
+        objecten:
+          type: array
+          minItems: 1
+          items:
+            $ref: '#/components/schemas/TeVernietigenObject'
+      example:
+        batchNummer: 1
+        objecten:
+          - vernietigingskandidaatId: kandidaat-000123
+            bronId: DSR-2020-123
+
+    TeVernietigenObject:
+      type: object
+      required:
+        - vernietigingskandidaatId
+        - bronId
+      properties:
+        vernietigingskandidaatId:
+          type: string
+          description: Stabiele identificatie van de vrijgegeven vernietigingskandidaat.
+        bronId:
+          type: string
+          description: Technische sleutel waarmee de Stekker het object in de bron kan terugvinden en vernietigen.
+        relatieType:
+          type: string
+        relatieId:
+          type: string
+
+    BatchResultaat:
+      type: object
+      required:
+        - batchNummer
+        - resultaten
+      properties:
+        batchNummer:
+          type: integer
+          minimum: 1
+        resultaten:
+          type: array
+          items:
+            $ref: '#/components/schemas/Uitvoeringsresultaat'
+      example:
+        batchNummer: 1
+        resultaten:
+          - vernietigingskandidaatId: kandidaat-000123
+            bronId: DSR-2020-123
+            resultaat: SUCCESS
+
+    Uitvoeringsresultaat:
+      type: object
+      required:
+        - vernietigingskandidaatId
+        - bronId
+        - resultaat
+      properties:
+        vernietigingskandidaatId:
+          type: string
+          description: Stabiele identificatie van de vernietigingskandidaat waarop het resultaat betrekking heeft.
+        bronId:
+          type: string
+          description: Technische sleutel waarmee de Stekker het object in de bron heeft teruggevonden of geprobeerd heeft terug te vinden.
+        batchNummer:
+          type: integer
+          minimum: 1
+        resultaat:
+          $ref: '#/components/schemas/UitvoeringsresultaatWaarde'
+        foutcode:
+          type: string
+        foutmelding:
+          type: string
+        bronstatus:
+          type: string
+        logReference:
+          type: string
+        correlatieId:
+          type: string
+        toelichting:
+          type: string
+
+    Fout:
+      type: object
+      required:
+        - code
+        - message
+      properties:
+        code:
+          type: string
+          description: Stabiele foutcode die door de Cockpit kan worden verwerkt.
+        message:
+          type: string
+          description: Leesbare foutmelding.
+        details:
+          type: string
+          description: Optionele technische of validatie-informatie.
+        correlatieId:
+          type: string
+          description: Correlatiekenmerk voor logging en foutanalyse.
+        logReference:
+          type: string
+          description: Verwijzing naar technische logging bij de Stekker.
+      example:
+        code: VALIDATION_ERROR
+        message: Request is ongeldig of onvolledig.
+        correlatieId: corr-20260923-001
+
+    SelectieStatus:
+      type: string
+      enum:
+        - IDLE
+        - RUNNING
+        - READY
+        - FAILED
+
+    VernietigingStatus:
+      type: string
+      enum:
+        - IDLE
+        - RUNNING
+        - COMPLETED
+        - PARTIAL
+        - FAILED
+
+    UitvoeringsresultaatWaarde:
+      type: string
+      enum:
+        - SUCCESS
+        - FAILED
+        - SKIPPED
+        - NOT_FOUND
+        - CHANGED
+
+    Waardering:
+      type: string
+      enum:
+        - BEWAREN
+        - VERNIETIGEN

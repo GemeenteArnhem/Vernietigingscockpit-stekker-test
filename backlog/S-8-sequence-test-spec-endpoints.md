@@ -1,5 +1,9 @@
 # S-8 – Sequence-test aanpassen aan gewijzigde endpoints
 
+## Status
+
+Gereed en uitgebreid: de sequence-test is een `node:test`-test die meedraait in `npm test`. Hij pagineert alle kandidaten, levert meerdere batches met Idempotency-Keys, simuleert een Cockpit-herstart en doet de integriteitscontrole (elke aangeboden kandidaat precies één resultaat).
+
 ## Doel
 
 Laat `npm run test:sequence` draaien tegen de spec-conforme endpoints en statussen.

@@ -1,5 +1,9 @@
 # S-3 – Optionele JWT-validatie
 
+## Status
+
+Gereed, zie [S-13](S-13-foutafhandeling-validatie-correlatie.md) voor de foutvorm. Validatie zonder dependencies met `node:crypto` (`RS256`, `ES256`; `none` en HMAC altijd geweigerd), JWKS-cache met begrensd herladen bij sleutelrotatie, scopes uit `scope` of `scp`. De JWKS wordt opgehaald met een time-out van 5 s, en gelijktijdige requests delen één opvraging. Afwijkend van de scope: in `compose.yaml` staat `AUTH_ENABLED` standaard aan; zonder `AUTH_ISSUER`/`AUTH_JWKS_URL` start de stekker dan niet.
+
 ## Doel
 
 Ondersteun OAuth2/JWT-validatie optioneel, zodat de teststekker met Keycloak kan worden getest zonder lokaal ontwikkelgemak te verliezen.

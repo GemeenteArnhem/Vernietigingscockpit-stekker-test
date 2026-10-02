@@ -1,5 +1,9 @@
 # S-4 – Idempotency-Key bij vernietiging respecteren
 
+## Status
+
+Gereed en uitgebreid: de key werkt op `POST /vernietigingen`, `…/batches` en `…/vrijgeven`. Een herhaling geeft dezelfde resource in de actuele stand; de key geldt per endpoint en vernietiging; dezelfde key met andere inhoud geeft `409 IDEMPOTENCY_KEY_CONFLICT`. Met `IDEMPOTENCY_KEY_REQUIRED=true` is de key verplicht. Keys staan op het runtime-volume (zie [S-12](S-12-persistente-toestand.md)).
+
 ## Doel
 
 Maak `POST /vernietigingen` idempotent op basis van de `Idempotency-Key`-header.

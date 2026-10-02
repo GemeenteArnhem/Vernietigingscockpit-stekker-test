@@ -10,4 +10,8 @@ export class InMemorySelectieRepository {
     const selectie = this.#selecties.get(selectieId);
     return selectie ? structuredClone(selectie) : undefined;
   }
+
+  findAll() {
+    return [...this.#selecties.values()].map((waarde) => structuredClone(waarde));
+  }
 }

@@ -15,7 +15,7 @@ test('maakt een bevroren selectie uit de CSV-bron', async () => {
 
   const selectie = await service.startSelectie({ peildatum: '2026-09-25' });
 
-  assert.equal(selectie.selectiestatus, 'READY');
+  assert.equal(selectie.status, 'READY');
   assert.equal(selectie.bronRecords, 200);
   assert.equal(selectie.aantalWaarschuwingen, 0);
   assert.equal(selectie.totaalKandidaten > 0, true);
@@ -33,7 +33,7 @@ test('levert kandidaten gepagineerd en zonder metadata mutatie', async () => {
   const selectie = await service.startSelectie({ peildatum: '2026-09-25' });
   const pagina = service.getKandidaten(selectie.selectieId, { offset: 10, limit: 5 });
 
-  assert.equal(pagina.objecten.length, 5);
+  assert.equal(pagina.items.length, 5);
   assert.equal(pagina.offset, 10);
   assert.equal(pagina.limit, 5);
   assert.equal(pagina.totaal, selectie.totaalKandidaten);
@@ -49,7 +49,7 @@ test('houdt selectie tijdelijk op RUNNING en rondt daarna de snapshot af', async
 
   const selectie = await service.startSelectie({ peildatum: '2026-09-25' });
 
-  assert.equal(selectie.selectiestatus, 'RUNNING');
+  assert.equal(selectie.status, 'RUNNING');
   assert.match(selectie.snapshotBronPath, /bron-snapshot\.csv$/);
   assert.throws(
     () => service.getKandidaten(selectie.selectieId, { offset: 0, limit: 5 }),
@@ -62,7 +62,7 @@ test('houdt selectie tijdelijk op RUNNING en rondt daarna de snapshot af', async
 
   const afgerond = service.getSelectie(selectie.selectieId);
 
-  assert.equal(afgerond.selectiestatus, 'READY');
+  assert.equal(afgerond.status, 'READY');
   assert.equal(afgerond.bronRecords, 200);
   assert.equal(afgerond.totaalKandidaten, 142);
 });

@@ -1,5 +1,9 @@
 # S-7 – Dockerfile, runtime-volume en health-info
 
+## Status
+
+Gereed en uitgebreid: container draait als gebruiker `node`, `node` is PID 1 en sluit netjes af op `SIGTERM`. Zie [S-15](S-15-ids-logging-container.md).
+
 ## Doel
 
 Maak de teststekker geschikt voor docker-compose en CI.

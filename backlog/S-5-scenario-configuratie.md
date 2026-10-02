@@ -1,5 +1,9 @@
 # S-5 – Scenario-configuratie voor foutpaden
 
+## Status
+
+Gereed en uitgebreid: naast de kandidaatresultaten (ook `SKIPPED`) en een falende selectie zijn er transportscenario's (eerste N calls per endpoint falen met 401/403/500/502/503/504, vóór of ná verwerking, met vaste vertraging). De vernietiging is nu standaard asynchroon, per batch (`VERNIETIGING_PROCESSING_DELAY_MS`, standaard 1000 ms). Scenario's staan alleen in env; ongeldige waarden laten de stekker bij opstarten falen.
+
 ## Doel
 
 Maak foutpaden configureerbaar, zodat de cockpit betrouwbaar kan testen met `FAILED`, `CHANGED`, `NOT_FOUND`, falende selectie en trage verwerking.

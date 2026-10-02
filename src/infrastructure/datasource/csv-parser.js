@@ -61,7 +61,7 @@ export function stringifyCsv(records) {
     return '';
   }
 
-  const headers = Object.keys(records[0]);
+  const headers = [...new Set(records.flatMap((record) => Object.keys(record)))];
   const lines = [
     headers.map(escapeCsvValue).join(','),
     ...records.map((record) => headers.map((header) => escapeCsvValue(record[header] ?? '')).join(','))

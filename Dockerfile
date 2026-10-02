@@ -5,16 +5,24 @@ WORKDIR /app
 ENV NODE_ENV=production
 ENV PORT=3000
 ENV STEKKER_RUNTIME_SELECTIES_PATH=/app/runtime/selecties
+ENV STEKKER_RUNTIME_VERNIETIGINGEN_PATH=/app/runtime/vernietigingen
+ENV STEKKER_RUNTIME_IDEMPOTENCY_PATH=/app/runtime/idempotency
+ENV STEKKER_RUNTIME_LOCK_PATH=/app/runtime/instance.lock
 
 COPY package.json ./
 COPY src ./src
 COPY data ./data
+COPY scripts ./scripts
 
-RUN mkdir -p /app/runtime/selecties
+# Runtime-state staat op een volume en is van de niet-root gebruiker `node`.
+RUN mkdir -p /app/runtime/selecties /app/runtime/vernietigingen /app/runtime/idempotency \n  && chown -R node:node /app/runtime
+
+USER node
 
 EXPOSE 3000
 
 HEALTHCHECK --interval=10s --timeout=3s --start-period=5s --retries=3 \
   CMD node -e "fetch('http://127.0.0.1:' + (process.env.PORT || 3000) + '/health').then((response) => process.exit(response.ok ? 0 : 1)).catch(() => process.exit(1))"
 
-CMD ["npm", "start"]
+# node direct als PID 1, zodat SIGTERM de stekker netjes laat afsluiten.
+CMD ["node", "src/index.js"]

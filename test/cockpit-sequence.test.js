@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import { once } from 'node:events';
+import test from 'node:test';
 import { createHttpServer } from '../src/api/http-server.js';
 import { SelectieService } from '../src/application/selectie-service.js';
 import { VernietigingService } from '../src/application/vernietiging-service.js';
@@ -10,128 +11,180 @@ import { InMemoryVernietigingRepository } from '../src/infrastructure/repositori
 
 const sequenceConfig = {
   peildatum: '2026-09-25',
+  aantalKandidaten: Number.parseInt(process.env.SEQUENCE_AANTAL_KANDIDATEN || '25', 10),
   batchSize: Number.parseInt(process.env.SEQUENCE_BATCH_SIZE || '10', 10),
+  pageSize: Number.parseInt(process.env.SEQUENCE_PAGE_SIZE || '50', 10),
   selectieDelayMs: Number.parseInt(process.env.SEQUENCE_SELECTIE_DELAY_MS || '100', 10),
+  vernietigingDelayMs: Number.parseInt(process.env.SEQUENCE_VERNIETIGING_DELAY_MS || '50', 10),
   pollIntervalMs: 50,
-  pollTimeoutMs: 5000
+  pollTimeoutMs: 10000
 };
 
-const server = await startTestServer();
+// Simuleert de Cockpit via HTTP, volgens de Stekker-OpenAPI-spec: selectie starten,
+// alle kandidaten pagineren, vernietigen in meerdere batches met Idempotency-Keys,
+// een herstart van de Cockpit halverwege, pollen tot een eindstatus en de
+// integriteitscontrole "elke aangeboden kandidaat heeft precies één resultaat".
+test('cockpit-sequence volgens de stekker-specificatie', async () => {
+  const server = await startTestServer();
 
-try {
-  const baseUrl = `http://127.0.0.1:${server.address().port}`;
-  logStep(`Stekker gestart op ${baseUrl}`);
+  try {
+    const baseUrl = `http://127.0.0.1:${server.address().port}`;
+    const taak = 'cockpit-sequence-taak-001';
+    logStep(`Stekker gestart op ${baseUrl}`);
 
-  const health = await httpJson(`${baseUrl}/health`);
-  assert.equal(health.status, 200);
-  assert.equal(health.body.status, 'ok');
-  logStep('Healthcheck OK');
+    const health = await httpJson(`${baseUrl}/health`);
+    assert.equal(health.status, 200);
+    assert.equal(health.body.status, 'ok');
+    logStep('Healthcheck OK');
 
-  const selectieStart = await httpJson(`${baseUrl}/selecties`, {
-    method: 'POST',
-    body: { peildatum: sequenceConfig.peildatum }
-  });
-  assert.equal(selectieStart.status, 201);
-  assert.equal(selectieStart.body.selectiestatus, 'RUNNING');
-  logStep(`Selectie gestart: ${selectieStart.body.selectieId}`);
+    // Selectie
+    const selectieStart = await httpJson(`${baseUrl}/selecties`, {
+      method: 'POST',
+      body: { peildatum: sequenceConfig.peildatum }
+    });
+    assert.equal(selectieStart.status, 202);
+    assert.equal(selectieStart.body.status, 'RUNNING');
+    logStep(`Selectie gestart: ${selectieStart.body.selectieId}`);
 
-  const earlyObjects = await httpJson(`${baseUrl}/selecties/${selectieStart.body.selectieId}/objecten?offset=0&limit=1`, {
-    expectedStatuses: [409]
-  });
-  assert.equal(earlyObjects.body.code, 'SELECTIE_NOT_READY');
-  logStep('Vroege objectopvraag geeft SELECTIE_NOT_READY');
+    const earlyObjects = await httpJson(`${baseUrl}/selecties/${selectieStart.body.selectieId}/objecten?offset=0&limit=1`, {
+      expectedStatuses: [409]
+    });
+    assert.equal(earlyObjects.body.code, 'SELECTIE_NOT_READY');
+    logStep('Vroege objectopvraag geeft SELECTIE_NOT_READY');
 
-  const selectie = await waitForReadySelection(baseUrl, selectieStart.body.selectieId);
-  assert.equal(selectie.selectiestatus, 'READY');
-  assert.equal(selectie.totaalKandidaten, 142);
-  logStep(`Selectie READY met ${selectie.totaalKandidaten} kandidaten`);
+    const selectie = await waitForReadySelection(baseUrl, selectieStart.body.selectieId);
+    assert.equal(selectie.totaalKandidaten, 142);
+    logStep(`Selectie READY met ${selectie.totaalKandidaten} kandidaten`);
 
-  const kandidatenPagina = await httpJson(
-    `${baseUrl}/selecties/${selectie.selectieId}/objecten?offset=0&limit=${sequenceConfig.batchSize}`
-  );
-  assert.equal(kandidatenPagina.status, 200);
-  assert.equal(kandidatenPagina.body.objecten.length, sequenceConfig.batchSize);
-  logStep(`${kandidatenPagina.body.objecten.length} kandidaten opgehaald voor batch`);
+    const kandidaten = await haalAlleKandidatenOp(baseUrl, selectie.selectieId);
+    assert.equal(kandidaten.length, selectie.totaalKandidaten);
+    assert.equal(new Set(kandidaten.map((kandidaat) => kandidaat.vernietigingskandidaatId)).size, kandidaten.length);
+    logStep(`${kandidaten.length} kandidaten opgehaald in pagina's van ${sequenceConfig.pageSize}`);
 
-  const vernietigingStart = await httpJson(`${baseUrl}/vernietigingen`, {
-    method: 'POST',
-    body: {
-      selectieId: selectie.selectieId,
-      cockpitTaakId: 'cockpit-sequence-taak-001',
-      besluitReferentie: 'cockpit-sequence-besluit-001',
-      vernietigingsdossierId: 'cockpit-sequence-dossier-001'
+    // Vernietiging, in deterministische volgorde en in meerdere batches
+    const aangeboden = kandidaten
+      .map(({ vernietigingskandidaatId, bronId }) => ({ vernietigingskandidaatId, bronId }))
+      .sort((a, b) => a.vernietigingskandidaatId.localeCompare(b.vernietigingskandidaatId))
+      .slice(0, sequenceConfig.aantalKandidaten);
+    const batches = chunk(aangeboden, sequenceConfig.batchSize);
+
+    const startVerzoek = {
+      method: 'POST',
+      headers: { 'Idempotency-Key': `${taak}:stekker:vernietiging` },
+      body: {
+        selectieId: selectie.selectieId,
+        cockpitTaakId: taak,
+        besluitReferentie: 'cockpit-sequence-besluit-001',
+        vernietigingsdossierId: 'cockpit-sequence-dossier-001'
+      }
+    };
+    const vernietigingStart = await httpJson(`${baseUrl}/vernietigingen`, startVerzoek);
+    assert.equal(vernietigingStart.status, 202);
+    assert.equal(vernietigingStart.body.status, 'IDLE');
+    const vernietigingId = vernietigingStart.body.vernietigingId;
+    logStep(`Vernietiging aangemaakt: ${vernietigingId}`);
+
+    for (const [index, objecten] of batches.entries()) {
+      const batch = await httpJson(`${baseUrl}/vernietigingen/${vernietigingId}/batches`, {
+        method: 'POST',
+        headers: { 'Idempotency-Key': `${taak}:stekker:batch:${index + 1}` },
+        body: { batchNummer: index + 1, objecten }
+      });
+      assert.equal(batch.status, 202);
+      assert.equal(batch.body.batchNummer, index + 1);
     }
-  });
-  assert.equal(vernietigingStart.status, 201);
-  assert.equal(vernietigingStart.body.status, 'IDLE');
-  logStep(`Vernietiging aangemaakt: ${vernietigingStart.body.vernietigingId}`);
+    logStep(`${batches.length} batches aangeleverd (${aangeboden.length} kandidaten)`);
 
-  const batchObjecten = kandidatenPagina.body.objecten.map((kandidaat) => ({
-    vernietigingskandidaatId: kandidaat.vernietigingskandidaatId,
-    bronId: kandidaat.bronId
-  }));
+    const vrijgaveVerzoek = {
+      method: 'POST',
+      headers: { 'Idempotency-Key': `${taak}:stekker:vrijgeven` },
+      body: { aantalBatches: batches.length, aantalKandidaten: aangeboden.length }
+    };
+    const vrijgave = await httpJson(`${baseUrl}/vernietigingen/${vernietigingId}/vrijgeven`, vrijgaveVerzoek);
+    assert.equal(vrijgave.status, 202);
+    assert.equal(vrijgave.body.status, 'RUNNING');
+    logStep('Vernietiging vrijgegeven, status RUNNING');
 
-  const batch = await httpJson(`${baseUrl}/vernietigingen/${vernietigingStart.body.vernietigingId}/batches`, {
-    method: 'POST',
-    body: {
-      batchNummer: 1,
-      objecten: batchObjecten
+    // Cockpit herstart: alle muterende calls worden met dezelfde keys herhaald.
+    const herhaaldeStart = await httpJson(`${baseUrl}/vernietigingen`, startVerzoek);
+    assert.equal(herhaaldeStart.body.vernietigingId, vernietigingId);
+    const herhaaldeBatch = await httpJson(`${baseUrl}/vernietigingen/${vernietigingId}/batches`, {
+      method: 'POST',
+      headers: { 'Idempotency-Key': `${taak}:stekker:batch:1` },
+      body: { batchNummer: 1, objecten: batches[0] }
+    });
+    assert.equal(herhaaldeBatch.status, 202);
+    const herhaaldeVrijgave = await httpJson(`${baseUrl}/vernietigingen/${vernietigingId}/vrijgeven`, vrijgaveVerzoek);
+    assert.equal(herhaaldeVrijgave.status, 202);
+    assert.notEqual(herhaaldeVrijgave.body.status, 'IDLE');
+    logStep('Herstart gesimuleerd: herhaalde calls met dezelfde keys leveren dezelfde vernietiging op');
+
+    const afgerond = await waitForEindstatus(baseUrl, vernietigingId);
+    assert.equal(afgerond.status, 'COMPLETED');
+    assert.equal(afgerond.totaalBatches, batches.length);
+    assert.equal(afgerond.totaalKandidaten, aangeboden.length);
+    assert.equal(afgerond.succesvolVernietigd, aangeboden.length);
+    logStep(`Vernietiging COMPLETED met ${afgerond.succesvolVernietigd} SUCCESS resultaten`);
+
+    // Resultaten via de batch-endpoints, met integriteitscontrole
+    const overzicht = await httpJson(`${baseUrl}/vernietigingen/${vernietigingId}/batches`);
+    assert.deepEqual(overzicht.body.map((batchResultaat) => batchResultaat.batchNummer), batches.map((_, index) => index + 1));
+
+    const resultaten = [];
+    for (const [index, objecten] of batches.entries()) {
+      const batchResultaat = await httpJson(`${baseUrl}/vernietigingen/${vernietigingId}/batches/${index + 1}`);
+      assert.equal(batchResultaat.body.resultaten.length, objecten.length);
+      resultaten.push(...batchResultaat.body.resultaten);
     }
-  });
-  assert.equal(batch.status, 202);
-  assert.equal(batch.body.objecten.length, sequenceConfig.batchSize);
-  logStep('Batch 1 aangeleverd');
 
-  const vrijgave = await httpJson(`${baseUrl}/vernietigingen/${vernietigingStart.body.vernietigingId}/vrijgeven`, {
-    method: 'POST',
-    body: {
-      aantalBatches: 1,
-      aantalKandidaten: sequenceConfig.batchSize
+    const resultaatPerKandidaat = new Map();
+    for (const resultaat of resultaten) {
+      assert.equal(
+        resultaatPerKandidaat.has(resultaat.vernietigingskandidaatId),
+        false,
+        `Dubbel resultaat voor ${resultaat.vernietigingskandidaatId}`
+      );
+      resultaatPerKandidaat.set(resultaat.vernietigingskandidaatId, resultaat);
     }
-  });
-  assert.equal(vrijgave.status, 200);
-  assert.equal(vrijgave.body.status, 'COMPLETED');
-  assert.equal(vrijgave.body.succesvolVernietigd, sequenceConfig.batchSize);
-  assert.equal(vrijgave.body.nietGevonden, 0);
-  logStep(`Vernietiging COMPLETED met ${vrijgave.body.succesvolVernietigd} SUCCESS resultaten`);
+    for (const object of aangeboden) {
+      assert.equal(
+        resultaatPerKandidaat.get(object.vernietigingskandidaatId)?.bronId,
+        object.bronId,
+        `Geen passend resultaat voor ${object.vernietigingskandidaatId}`
+      );
+    }
+    assert.equal(resultaatPerKandidaat.size, aangeboden.length);
+    assert.equal(resultaten.filter((resultaat) => resultaat.resultaat === 'SUCCESS').length, afgerond.succesvolVernietigd);
+    logStep('Integriteitscontrole: elke aangeboden kandidaat heeft precies één resultaat, tellingen kloppen');
 
-  const resultaten = await httpJson(
-    `${baseUrl}/vernietigingen/${vernietigingStart.body.vernietigingId}/resultaten?offset=0&limit=100`
-  );
-  assert.equal(resultaten.status, 200);
-  assert.equal(resultaten.body.resultaten.length, sequenceConfig.batchSize);
-  assert.equal(resultaten.body.resultaten.every((resultaat) => resultaat.resultaat === 'SUCCESS'), true);
-  logStep('Resultaten opgehaald en gevalideerd');
+    // Tweede poging op een al vernietigd snapshotrecord
+    const tweedeVernietiging = await httpJson(`${baseUrl}/vernietigingen`, {
+      method: 'POST',
+      body: {
+        selectieId: selectie.selectieId,
+        cockpitTaakId: 'cockpit-sequence-taak-002',
+        besluitReferentie: 'cockpit-sequence-besluit-002'
+      }
+    });
+    await httpJson(`${baseUrl}/vernietigingen/${tweedeVernietiging.body.vernietigingId}/batches`, {
+      method: 'POST',
+      body: { batchNummer: 1, objecten: [aangeboden[0]] }
+    });
+    const tweedeVrijgave = await httpJson(`${baseUrl}/vernietigingen/${tweedeVernietiging.body.vernietigingId}/vrijgeven`, {
+      method: 'POST',
+      body: { aantalBatches: 1, aantalKandidaten: 1 }
+    });
+    assert.equal(tweedeVrijgave.status, 202);
+    const tweedeAfgerond = await waitForEindstatus(baseUrl, tweedeVernietiging.body.vernietigingId);
+    assert.equal(tweedeAfgerond.nietGevonden, 1);
+    assert.equal(tweedeAfgerond.status, 'PARTIAL');
+    logStep('Tweede poging op hetzelfde snapshotrecord geeft NOT_FOUND en status PARTIAL');
 
-  const tweedeVernietiging = await httpJson(`${baseUrl}/vernietigingen`, {
-    method: 'POST',
-    body: {
-      selectieId: selectie.selectieId,
-      cockpitTaakId: 'cockpit-sequence-taak-002',
-      besluitReferentie: 'cockpit-sequence-besluit-002'
-    }
-  });
-  await httpJson(`${baseUrl}/vernietigingen/${tweedeVernietiging.body.vernietigingId}/batches`, {
-    method: 'POST',
-    body: {
-      batchNummer: 1,
-      objecten: [batchObjecten[0]]
-    }
-  });
-  const tweedeVrijgave = await httpJson(`${baseUrl}/vernietigingen/${tweedeVernietiging.body.vernietigingId}/vrijgeven`, {
-    method: 'POST',
-    body: {
-      aantalBatches: 1,
-      aantalKandidaten: 1
-    }
-  });
-  assert.equal(tweedeVrijgave.body.nietGevonden, 1);
-  logStep('Tweede poging op hetzelfde snapshotrecord geeft NOT_FOUND');
-
-  console.log('\nCockpit sequence succesvol afgerond.');
-} finally {
-  await closeServer(server);
-}
+    logStep('Cockpit sequence succesvol afgerond.');
+  } finally {
+    await closeServer(server);
+  }
+});
 
 async function startTestServer() {
   const zaakSource = new CsvZaakSource(stekkerConfig.dataSource.path);
@@ -143,9 +196,10 @@ async function startTestServer() {
   const vernietigingService = new VernietigingService({
     zaakSource,
     selectieService,
-    vernietigingRepository: new InMemoryVernietigingRepository()
+    vernietigingRepository: new InMemoryVernietigingRepository(),
+    processingDelayMs: sequenceConfig.vernietigingDelayMs
   });
-  const testServer = createHttpServer({ selectieService, vernietigingService });
+  const testServer = createHttpServer({ selectieService, vernietigingService, logRequests: false });
 
   testServer.listen(0, '127.0.0.1');
   await once(testServer, 'listening');
@@ -158,11 +212,11 @@ async function waitForReadySelection(baseUrl, selectieId) {
   while (Date.now() - startedAt < sequenceConfig.pollTimeoutMs) {
     const response = await httpJson(`${baseUrl}/selecties/${selectieId}`);
 
-    if (response.body.selectiestatus === 'READY') {
+    if (response.body.status === 'READY') {
       return response.body;
     }
 
-    if (response.body.selectiestatus === 'FAILED') {
+    if (response.body.status === 'FAILED') {
       throw new Error(`Selectie ${selectieId} is FAILED.`);
     }
 
@@ -172,10 +226,46 @@ async function waitForReadySelection(baseUrl, selectieId) {
   throw new Error(`Selectie ${selectieId} werd niet READY binnen ${sequenceConfig.pollTimeoutMs}ms.`);
 }
 
-async function httpJson(url, { method = 'GET', body, expectedStatuses } = {}) {
+async function haalAlleKandidatenOp(baseUrl, selectieId) {
+  const kandidaten = [];
+  let totaal;
+
+  do {
+    const pagina = await httpJson(
+      `${baseUrl}/selecties/${selectieId}/objecten?offset=${kandidaten.length}&limit=${sequenceConfig.pageSize}`
+    );
+    totaal = pagina.body.totaal;
+
+    if (pagina.body.items.length === 0) {
+      break;
+    }
+
+    kandidaten.push(...pagina.body.items);
+  } while (kandidaten.length < totaal);
+
+  return kandidaten;
+}
+
+async function waitForEindstatus(baseUrl, vernietigingId) {
+  const startedAt = Date.now();
+
+  while (Date.now() - startedAt < sequenceConfig.pollTimeoutMs) {
+    const response = await httpJson(`${baseUrl}/vernietigingen/${vernietigingId}`);
+
+    if (['COMPLETED', 'PARTIAL', 'FAILED'].includes(response.body.status)) {
+      return response.body;
+    }
+
+    await sleep(sequenceConfig.pollIntervalMs);
+  }
+
+  throw new Error(`Vernietiging ${vernietigingId} bereikte geen eindstatus binnen ${sequenceConfig.pollTimeoutMs}ms.`);
+}
+
+async function httpJson(url, { method = 'GET', body, headers = {}, expectedStatuses } = {}) {
   const response = await fetch(url, {
     method,
-    headers: body ? { 'content-type': 'application/json' } : undefined,
+    headers: { ...(body ? { 'content-type': 'application/json' } : {}), ...headers },
     body: body ? JSON.stringify(body) : undefined
   });
   const responseBody = await response.json();
@@ -198,6 +288,16 @@ async function closeServer(testServer) {
 
   testServer.close();
   await once(testServer, 'close');
+}
+
+function chunk(items, size) {
+  const chunks = [];
+
+  for (let index = 0; index < items.length; index += size) {
+    chunks.push(items.slice(index, index + size));
+  }
+
+  return chunks;
 }
 
 function sleep(ms) {

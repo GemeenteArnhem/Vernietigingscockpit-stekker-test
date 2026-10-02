@@ -10,4 +10,8 @@ export class InMemoryVernietigingRepository {
     const vernietiging = this.#vernietigingen.get(vernietigingId);
     return vernietiging ? structuredClone(vernietiging) : undefined;
   }
+
+  findAll() {
+    return [...this.#vernietigingen.values()].map((waarde) => structuredClone(waarde));
+  }
 }

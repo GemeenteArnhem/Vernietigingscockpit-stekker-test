@@ -18,6 +18,7 @@ export const VernietigingStatus = Object.freeze({
   IDLE: 'IDLE',
   RUNNING: 'RUNNING',
   COMPLETED: 'COMPLETED',
+  PARTIAL: 'PARTIAL',
   FAILED: 'FAILED'
 });
 

@@ -1,5 +1,9 @@
 # S-1 – Batchresultaten ophalen via spec-endpoints
 
+## Status
+
+Gereed. `GET …/batches` en `GET …/batches/{batchNummer}` volgen `BatchResultaat`; ook `POST …/batches` geeft nu een `BatchResultaat`. Afwijkend van de scope: `/resultaten` is verwijderd in plaats van behouden (besluit 02-10-2026). Een ongeldig batchnummer geeft 404, omdat de spec hier geen 400 kent.
+
 ## Doel
 
 Maak de vernietigingsresultaten beschikbaar via de endpoints uit de stekker-specificatie:

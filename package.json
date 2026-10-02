@@ -6,9 +6,16 @@
   "scripts": {
     "start": "node src/index.js",
     "test": "node test/run-tests.js",
-    "test:sequence": "node test/cockpit-sequence.test.js"
+    "test:sequence": "node test/cockpit-sequence.test.js",
+    "test:contract": "node --test test/contract/stekker-contract.test.js",
+    "data:genereer": "node scripts/genereer-testdata.js"
   },
   "engines": {
     "node": ">=22"
+  },
+  "devDependencies": {
+    "ajv": "^8.20.0",
+    "ajv-formats": "^3.0.1",
+    "yaml": "^2.9.1"
   }
 }

@@ -1,5 +1,9 @@
 # S-6 – Tweede configuratie of instantie
 
+## Status
+
+Gereed. Tweede dataset `data/wmo-zaken.csv` met eigen id-reeks (`vk-wmo-…`), zie [S-14](S-14-testdata.md).
+
 ## Doel
 
 Maak het mogelijk om met twee stekkerconfiguraties of instanties te testen, zodat de cockpit een taak met meerdere stekkers kan doorlopen.

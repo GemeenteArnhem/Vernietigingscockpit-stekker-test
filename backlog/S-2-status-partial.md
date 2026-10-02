@@ -1,5 +1,9 @@
 # S-2 – Status PARTIAL ondersteunen
 
+## Status
+
+Gereed. `COMPLETED` bij alleen `SUCCESS`, anders `PARTIAL`; `FAILED` alleen als de verwerking als geheel mislukt.
+
 ## Doel
 
 Zet de vernietigingsstatus op `PARTIAL` wanneer de uitvoering is afgerond, maar minimaal een resultaat niet `SUCCESS` is.

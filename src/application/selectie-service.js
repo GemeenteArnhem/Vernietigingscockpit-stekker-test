@@ -1,8 +1,10 @@
 import crypto from 'node:crypto';
 import fs from 'node:fs/promises';
 import path from 'node:path';
+import { GEEN_SCENARIO } from '../config/scenario-config.js';
 import { stekkerConfig } from '../config/stekker-config.js';
 import { SelectieStatus } from '../domain/status.js';
+import { ValidationError } from './errors.js';
 import { isVernietigbaarOpPeildatum, selectielijstjaarVoorZaakjaar } from '../domain/selectielijst.js';
 import { mapBronrecordToKandidaat, validateBronrecord } from '../domain/vernietigingskandidaat.js';
 
@@ -11,17 +13,24 @@ export class SelectieService {
     zaakSource,
     selectieRepository,
     clock = () => new Date(),
-    processingDelayMs = stekkerConfig.selectieProcessingDelayMs
+    processingDelayMs = stekkerConfig.selectieProcessingDelayMs,
+    scenario = stekkerConfig.scenario ?? GEEN_SCENARIO
   }) {
     this.zaakSource = zaakSource;
     this.selectieRepository = selectieRepository;
     this.clock = clock;
     this.processingDelayMs = processingDelayMs;
+    this.scenario = scenario;
+    this.afgerondeSelecties = new Map();
   }
 
   async startSelectie({ peildatum = stekkerConfig.defaultPeildatum } = {}) {
+    if (!isGeldigeDatum(peildatum)) {
+      throw new ValidationError('peildatum moet een geldige datum zijn in de vorm JJJJ-MM-DD.');
+    }
+
     const selectietijdstip = this.clock().toISOString();
-    const selectieId = makeSelectieId({ peildatum, selectietijdstip });
+    const selectieId = makeSelectieId(peildatum);
     const snapshotDir = path.join(stekkerConfig.runtime.selectiesPath, selectieId);
     const snapshotBronPath = path.join(snapshotDir, 'bron-snapshot.csv');
 
@@ -34,7 +43,7 @@ export class SelectieService {
       selectietijdstip,
       processingDelayMs: this.processingDelayMs,
       snapshotBronPath,
-      selectiestatus: SelectieStatus.RUNNING,
+      status: SelectieStatus.RUNNING,
       totaalKandidaten: 0,
       totaalObjecten: 0,
       totaalBetrokkenen: 0,
@@ -53,25 +62,46 @@ export class SelectieService {
     this.selectieRepository.save(selectie);
 
     if (this.processingDelayMs <= 0) {
-      return this.completeSelectie(selectieId);
+      return this.voltooiSelectie(selectieId);
     }
 
+    // unref: de timer alleen houdt het proces niet in leven; in de stekker doet de
+    // HTTP-server dat al, en een test hoeft niet op een openstaande selectie te wachten.
     setTimeout(() => {
-      this.completeSelectie(selectieId).catch((error) => {
-        const failedSelection = this.selectieRepository.findById(selectieId);
-
-        if (failedSelection) {
-          this.selectieRepository.save({
-            ...failedSelection,
-            selectiestatus: SelectieStatus.FAILED,
-            aantalFouten: 1,
-            foutmelding: error.message
-          });
-        }
-      });
-    }, this.processingDelayMs);
+      void this.voltooiSelectie(selectieId);
+    }, this.processingDelayMs).unref();
 
     return selectie;
+  }
+
+  // Na een herstart van de stekker: selecties die nog RUNNING waren, alsnog afronden.
+  async hervatOnderbrokenSelecties() {
+    const onderbroken = this.selectieRepository.findAll()
+      .filter((selectie) => selectie.status === SelectieStatus.RUNNING);
+
+    await Promise.all(onderbroken.map(({ selectieId }) => this.voltooiSelectie(selectieId)));
+    return onderbroken.map(({ selectieId }) => selectieId);
+  }
+
+  // Een fout tijdens het selecteren levert een selectie met status FAILED op,
+  // niet een 500: de Cockpit ziet de fout via GET /selecties/{selectieId}.
+  async voltooiSelectie(selectieId) {
+    try {
+      return await this.completeSelectie(selectieId);
+    } catch (error) {
+      const failedSelection = this.selectieRepository.findById(selectieId);
+
+      if (!failedSelection) {
+        return undefined;
+      }
+
+      return this.selectieRepository.save({
+        ...failedSelection,
+        status: SelectieStatus.FAILED,
+        aantalFouten: 1,
+        foutmelding: error.message
+      });
+    }
   }
 
   async completeSelectie(selectieId) {
@@ -79,6 +109,10 @@ export class SelectieService {
 
     if (!selectie) {
       return undefined;
+    }
+
+    if (this.scenario.selectieFail) {
+      throw new Error('Selectie mislukt (gesimuleerd via SCENARIO_SELECTIE_FAIL).');
     }
 
     const records = await this.zaakSource.findAllFrom(selectie.snapshotBronPath);
@@ -113,7 +147,7 @@ export class SelectieService {
     const completedSelection = {
       ...selectie,
       gereedTijdstip: this.clock().toISOString(),
-      selectiestatus: SelectieStatus.READY,
+      status: SelectieStatus.READY,
       totaalKandidaten: kandidaten.length,
       totaalObjecten: kandidaten.reduce((total, kandidaat) => total + kandidaat.aantalObjecten, 0),
       totaalBetrokkenen: kandidaten.reduce((total, kandidaat) => total + kandidaat.aantalBetrokkenen, 0),
@@ -127,8 +161,25 @@ export class SelectieService {
     return this.selectieRepository.save(completedSelection);
   }
 
+  // Een selectie in eindstatus (READY of FAILED) verandert niet meer. Die wordt na de
+  // eerste keer bevroren in het geheugen gehouden, zodat pagineren en batch-aanlevering
+  // bij grote selecties niet steeds het hele bestand opnieuw inlezen.
   getSelectie(selectieId) {
-    return this.selectieRepository.findById(selectieId);
+    const gecachet = this.afgerondeSelecties.get(selectieId);
+
+    if (gecachet) {
+      return gecachet;
+    }
+
+    const selectie = this.selectieRepository.findById(selectieId);
+
+    if (selectie && (selectie.status === SelectieStatus.READY || selectie.status === SelectieStatus.FAILED)) {
+      const bevroren = diepBevriezen(selectie);
+      this.afgerondeSelecties.set(selectieId, bevroren);
+      return bevroren;
+    }
+
+    return selectie;
   }
 
   getKandidaten(selectieId, { offset = 0, limit = 100 } = {}) {
@@ -138,8 +189,8 @@ export class SelectieService {
       return undefined;
     }
 
-    if (selectie.selectiestatus !== SelectieStatus.READY) {
-      throw new SelectieNogNietGereedError(selectieId, selectie.selectiestatus);
+    if (selectie.status !== SelectieStatus.READY) {
+      throw new SelectieNogNietGereedError(selectieId, selectie.status);
     }
 
     const safeOffset = Math.max(0, Number.parseInt(offset, 10) || 0);
@@ -150,7 +201,7 @@ export class SelectieService {
       offset: safeOffset,
       limit: safeLimit,
       totaal: selectie.kandidaten.length,
-      objecten: selectie.kandidaten.slice(safeOffset, safeOffset + safeLimit)
+      items: selectie.kandidaten.slice(safeOffset, safeOffset + safeLimit)
     };
   }
 }
@@ -164,12 +215,26 @@ export class SelectieNogNietGereedError extends Error {
   }
 }
 
-function makeSelectieId({ peildatum, selectietijdstip }) {
-  const hash = crypto
-    .createHash('sha256')
-    .update(`${peildatum}:${selectietijdstip}`)
-    .digest('hex')
-    .slice(0, 12);
+function diepBevriezen(waarde) {
+  if (waarde && typeof waarde === 'object' && !Object.isFrozen(waarde)) {
+    Object.values(waarde).forEach(diepBevriezen);
+    Object.freeze(waarde);
+  }
 
-  return `sel-${peildatum.replaceAll('-', '')}-${hash}`;
+  return waarde;
+}
+
+function isGeldigeDatum(waarde) {
+  if (typeof waarde !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(waarde)) {
+    return false;
+  }
+
+  const datum = new Date(`${waarde}T00:00:00Z`);
+  return !Number.isNaN(datum.getTime()) && datum.toISOString().slice(0, 10) === waarde;
+}
+
+// Leesbaar prefix met de peildatum, plus een willekeurig deel zodat twee selecties
+// in dezelfde milliseconde nooit hetzelfde id krijgen.
+function makeSelectieId(peildatum) {
+  return `sel-${peildatum.replaceAll('-', '')}-${crypto.randomBytes(6).toString('hex')}`;
 }
