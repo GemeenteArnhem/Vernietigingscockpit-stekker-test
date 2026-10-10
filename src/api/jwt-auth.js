@@ -12,13 +12,14 @@ const ALGORITMEN = {
 export const SCOPE_PER_ENDPOINT = {
   'POST /selecties': 'selectie.write',
   'GET /selecties/{selectieId}': 'selectie.read',
-  'GET /selecties/{selectieId}/objecten': 'selectie.read',
+  'GET /selecties/{selectieId}/vernietigingskandidaten': 'selectie.read',
   'POST /vernietigingen': 'vernietiging.write',
   'GET /vernietigingen/{vernietigingId}': 'vernietiging.read',
   'POST /vernietigingen/{vernietigingId}/batches': 'vernietiging.write',
   'GET /vernietigingen/{vernietigingId}/batches': 'vernietiging.read',
   'GET /vernietigingen/{vernietigingId}/batches/{batchNummer}': 'vernietiging.read',
-  'POST /vernietigingen/{vernietigingId}/vrijgeven': 'vernietiging.write'
+  'POST /vernietigingen/{vernietigingId}/vrijgeven': 'vernietiging.write',
+  'GET /vernietigingen/{vernietigingId}/specificaties/{vernietigingskandidaatId}': 'vernietiging.read'
 };
 
 export class AuthFout extends Error {

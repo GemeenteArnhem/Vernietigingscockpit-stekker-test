@@ -5,6 +5,8 @@ import { GEEN_SCENARIO } from '../config/scenario-config.js';
 import { stekkerConfig } from '../config/stekker-config.js';
 import { SelectieStatus } from '../domain/status.js';
 import { ValidationError } from './errors.js';
+import { Idempotentie } from './idempotentie.js';
+import { InMemoryIdempotencyRepository } from '../infrastructure/repositories/in-memory-idempotency-repository.js';
 import { isVernietigbaarOpPeildatum, selectielijstjaarVoorZaakjaar } from '../domain/selectielijst.js';
 import { mapBronrecordToKandidaat, validateBronrecord } from '../domain/vernietigingskandidaat.js';
 
@@ -14,19 +16,29 @@ export class SelectieService {
     selectieRepository,
     clock = () => new Date(),
     processingDelayMs = stekkerConfig.selectieProcessingDelayMs,
-    scenario = stekkerConfig.scenario ?? GEEN_SCENARIO
+    scenario = stekkerConfig.scenario ?? GEEN_SCENARIO,
+    mdto = stekkerConfig.mdto,
+    idempotencyRepository = new InMemoryIdempotencyRepository()
   }) {
     this.zaakSource = zaakSource;
     this.selectieRepository = selectieRepository;
     this.clock = clock;
     this.processingDelayMs = processingDelayMs;
     this.scenario = scenario;
+    this.mdto = mdto;
+    this.idempotentie = new Idempotentie(idempotencyRepository);
     this.afgerondeSelecties = new Map();
   }
 
-  async startSelectie({ peildatum = stekkerConfig.defaultPeildatum } = {}) {
+  async startSelectie({ peildatum = stekkerConfig.defaultPeildatum } = {}, { idempotencyKey } = {}) {
     if (!isGeldigeDatum(peildatum)) {
       throw new ValidationError('peildatum moet een geldige datum zijn in de vorm JJJJ-MM-DD.');
+    }
+
+    const idempotentie = this.idempotentie.controleer('POST /selecties', idempotencyKey, { peildatum });
+
+    if (idempotentie.registratie) {
+      return this.getSelectie(idempotentie.registratie.selectieId);
     }
 
     const selectietijdstip = this.clock().toISOString();
@@ -60,6 +72,7 @@ export class SelectieService {
     };
 
     this.selectieRepository.save(selectie);
+    this.idempotentie.registreer(idempotentie, { selectieId });
 
     if (this.processingDelayMs <= 0) {
       return this.voltooiSelectie(selectieId);
@@ -137,9 +150,9 @@ export class SelectieService {
         return;
       }
 
-      const kandidaat = mapBronrecordToKandidaat(record);
+      const kandidaat = mapBronrecordToKandidaat(record, this.mdto);
 
-      if (isVernietigbaarOpPeildatum(kandidaat, selectie.peildatum)) {
+      if (isVernietigbaarOpPeildatum(kandidaat, selectie.peildatum, { leverNietV: this.scenario.leverNietV })) {
         kandidaten.push(kandidaat);
       }
     });

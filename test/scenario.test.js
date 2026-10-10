@@ -30,13 +30,13 @@ function maakServices(scenario, { selectieDelayMs = 0 } = {}) {
 
 async function vernietigAlles({ zaakSource, selectieService, vernietigingService }) {
   const selectie = await selectieService.startSelectie({ peildatum: '2026-09-25' });
-  const objecten = selectie.kandidaten.map(({ vernietigingskandidaatId, bronId }) => ({ vernietigingskandidaatId, bronId }));
+  const objecten = selectie.kandidaten.map(({ vernietigingskandidaatId, identificatie }) => ({ vernietigingskandidaatId, identificatie }));
   const vernietiging = vernietigingService.startVernietiging({
     selectieId: selectie.selectieId,
     cockpitTaakId: 'taak-scenario',
     besluitReferentie: 'besluit-scenario'
   });
-  vernietigingService.voegBatchToe(vernietiging.vernietigingId, { batchNummer: 1, objecten });
+  vernietigingService.voegBatchToe(vernietiging.vernietigingId, { batchNummer: 1, vernietigingskandidaten: objecten });
   const afgerond = await vernietigingService.vrijgeven(vernietiging.vernietigingId, {
     aantalBatches: 1,
     aantalKandidaten: objecten.length
@@ -56,9 +56,13 @@ async function metServer(t, scenario, { selectieDelayMs = 0 } = {}) {
 
   const baseUrl = `http://127.0.0.1:${server.address().port}`;
   return async (pad, { method = 'GET', body } = {}) => {
-    const response = await fetch(`${baseUrl}${pad}`, {
+    // Stekker API v2: paden onder /v2 (behalve /health) en een Idempotency-Key op elke POST.
+    const response = await fetch(pad === '/health' ? `${baseUrl}${pad}` : `${baseUrl}/v2${pad}`, {
       method,
-      headers: body ? { 'content-type': 'application/json' } : undefined,
+      headers: {
+        ...(body ? { 'content-type': 'application/json' } : {}),
+        ...(method === 'POST' ? { 'Idempotency-Key': crypto.randomUUID() } : {})
+      },
       body: body ? JSON.stringify(body) : undefined
     });
     return { status: response.status, body: await response.json() };
@@ -157,19 +161,19 @@ test('transportfout ná verwerking: het verzoek is wel uitgevoerd, de retry slaa
     SCENARIO_HTTP_FAIL_ENDPOINTS: 'POST /vernietigingen/{vernietigingId}/batches'
   }));
   const selectie = await request('/selecties', { method: 'POST', body: { peildatum: '2026-09-25' } });
-  const pagina = await request(`/selecties/${selectie.body.selectieId}/objecten?limit=3`);
-  const objecten = pagina.body.items.map(({ vernietigingskandidaatId, bronId }) => ({ vernietigingskandidaatId, bronId }));
+  const pagina = await request(`/selecties/${selectie.body.selectieId}/vernietigingskandidaten?limit=3`);
+  const objecten = pagina.body.items.map(({ vernietigingskandidaatId, identificatie }) => ({ vernietigingskandidaatId, identificatie }));
   const vernietiging = await request('/vernietigingen', {
     method: 'POST',
     body: { selectieId: selectie.body.selectieId, cockpitTaakId: 'taak-na', besluitReferentie: 'besluit-na' }
   });
   const pad = `/vernietigingen/${vernietiging.body.vernietigingId}`;
 
-  const eerste = await request(`${pad}/batches`, { method: 'POST', body: { batchNummer: 1, objecten } });
+  const eerste = await request(`${pad}/batches`, { method: 'POST', body: { batchNummer: 1, vernietigingskandidaten: objecten } });
   assert.equal(eerste.status, 503);
 
   // De batch is ondanks de 503 ontvangen: de vrijgave met 1 batch slaagt.
-  const retry = await request(`${pad}/batches`, { method: 'POST', body: { batchNummer: 1, objecten } });
+  const retry = await request(`${pad}/batches`, { method: 'POST', body: { batchNummer: 1, vernietigingskandidaten: objecten } });
   assert.equal(retry.status, 202);
   const vrijgave = await request(`${pad}/vrijgeven`, { method: 'POST', body: { aantalBatches: 1, aantalKandidaten: 3 } });
   assert.equal(vrijgave.status, 202);

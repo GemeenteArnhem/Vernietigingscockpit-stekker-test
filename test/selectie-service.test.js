@@ -19,7 +19,7 @@ test('maakt een bevroren selectie uit de CSV-bron', async () => {
   assert.equal(selectie.bronRecords, 200);
   assert.equal(selectie.aantalWaarschuwingen, 0);
   assert.equal(selectie.totaalKandidaten > 0, true);
-  assert.equal(selectie.kandidaten.every((kandidaat) => kandidaat.vernietigingsdatum <= '2026-09-25'), true);
+  assert.equal(selectie.kandidaten.every((kandidaat) => kandidaat.bewaartermijn.termijnEinddatum <= '2026-09-25'), true);
 });
 
 test('levert kandidaten gepagineerd en zonder metadata mutatie', async () => {

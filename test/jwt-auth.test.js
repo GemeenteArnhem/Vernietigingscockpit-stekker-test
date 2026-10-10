@@ -76,10 +76,11 @@ async function startStekker(t, authenticator) {
 
   const baseUrl = `http://127.0.0.1:${server.address().port}`;
   return async (pad, { method = 'GET', token, body } = {}) => {
-    const response = await fetch(`${baseUrl}${pad}`, {
+    const response = await fetch(pad === '/health' ? `${baseUrl}${pad}` : `${baseUrl}/v2${pad}`, {
       method,
       headers: {
         ...(token ? { authorization: `Bearer ${token}` } : {}),
+        ...(method === 'POST' ? { 'Idempotency-Key': crypto.randomUUID() } : {}),
         ...(body ? { 'content-type': 'application/json' } : {})
       },
       body: body ? JSON.stringify(body) : undefined

@@ -6,7 +6,7 @@ import addFormats from 'ajv-formats';
 import YAML from 'yaml';
 
 const rootDir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
-export const SPEC_PATH = path.join(rootDir, 'spec', 'stekker-openapi-spec-v1.0.0.yaml');
+export const SPEC_PATH = path.join(rootDir, 'spec', 'stekker-openapi-spec-v2.0.0.yaml');
 
 const SPEC_ID = 'stekker-spec';
 

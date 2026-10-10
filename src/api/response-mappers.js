@@ -1,6 +1,7 @@
 // Responses bevatten uitsluitend velden uit de Stekker-OpenAPI-spec
-// (spec/stekker-openapi-spec-v1.0.0.yaml). Interne velden, zoals het pad van
-// de selectie-snapshot of de waarschuwingen per bronrij, blijven zo binnen de stekker.
+// (spec/stekker-openapi-spec-v2.0.0.yaml). Interne velden, zoals het pad van de
+// selectie-snapshot, de technische sleutel `bronId` of de waarschuwingen per bronrij,
+// blijven zo binnen de stekker.
 
 const SELECTIE_VELDEN = [
   'selectieId',
@@ -19,6 +20,27 @@ const SELECTIE_VELDEN = [
   'aantalFouten'
 ];
 
+const KANDIDAAT_VELDEN = [
+  'vernietigingskandidaatId',
+  'identificatie',
+  'naam',
+  'omschrijving',
+  'aggregatieniveau',
+  'classificatie',
+  'dekkingInTijd',
+  'waardering',
+  'bewaartermijn',
+  'informatiecategorie',
+  'informatiecategorieAfwijking',
+  'isOnderdeelVan',
+  'gerelateerdInformatieobject',
+  'archiefvormer',
+  'activiteit',
+  'aantalObjecten',
+  'aantalBetrokkenen',
+  'toelichting'
+];
+
 const KANDIDATEN_PAGINA_VELDEN = ['selectieId', 'offset', 'limit', 'cursor', 'nextCursor', 'totaal', 'items'];
 
 const VERNIETIGING_VELDEN = [
@@ -34,6 +56,7 @@ const VERNIETIGING_VELDEN = [
   'totaalObjecten',
   'totaalBatches',
   'ontvangenBatches',
+  'verwerkteBatches',
   'succesvolVernietigd',
   'mislukt',
   'overgeslagen',
@@ -43,9 +66,25 @@ const VERNIETIGING_VELDEN = [
   'stekkerOmschrijving',
   'stekkerversie',
   'configuratieversie',
-  'aantalBatches',
+  'vernietigingsmethode',
+  'vernietigingsmethodeToelichting',
   'aantalWaarschuwingen',
   'aantalFouten'
+];
+
+const RESULTAAT_VELDEN = [
+  'vernietigingskandidaatId',
+  'identificatie',
+  'batchNummer',
+  'resultaat',
+  'event',
+  'bronEventReferentie',
+  'foutcode',
+  'foutmelding',
+  'bronstatus',
+  'logReference',
+  'correlatieId',
+  'toelichting'
 ];
 
 export function toSelectieResponse(selectie) {
@@ -53,14 +92,19 @@ export function toSelectieResponse(selectie) {
 }
 
 export function toKandidatenPaginaResponse(pagina) {
-  return pick(pagina, KANDIDATEN_PAGINA_VELDEN);
+  return pick({ ...pagina, items: pagina.items.map((kandidaat) => pick(kandidaat, KANDIDAAT_VELDEN)) }, KANDIDATEN_PAGINA_VELDEN);
 }
 
 export function toVernietigingResponse(vernietiging) {
-  return pick(
-    { ...vernietiging, aantalBatches: vernietiging.batches.length },
-    VERNIETIGING_VELDEN
-  );
+  const verwerkteBatches = new Set(vernietiging.resultaten.map((resultaat) => resultaat.batchNummer)).size;
+  return pick({ ...vernietiging, verwerkteBatches }, VERNIETIGING_VELDEN);
+}
+
+export function toBatchResultaatResponse(batchResultaat) {
+  return {
+    batchNummer: batchResultaat.batchNummer,
+    resultaten: batchResultaat.resultaten.map((resultaat) => pick(resultaat, RESULTAAT_VELDEN))
+  };
 }
 
 function pick(source, velden) {

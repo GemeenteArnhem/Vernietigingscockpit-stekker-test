@@ -27,34 +27,25 @@ export class CsvZaakSource {
   // in een append-only log ernaast: één JSON-regel per vernietigd bronrecord.
   // Geeft een Map bronId → vernietigingId.
   async leesVernietigd(snapshotPath) {
-    let tekst;
-
-    try {
-      tekst = await fs.readFile(vernietigingslogPad(snapshotPath), 'utf8');
-    } catch (error) {
-      if (error.code === 'ENOENT') {
-        return new Map();
-      }
-
-      throw error;
-    }
-
     const vernietigd = new Map();
 
-    for (const regel of tekst.split('\n')) {
-      if (!regel.trim()) {
-        continue;
-      }
-
-      try {
-        const { bronId, vernietigingId } = JSON.parse(regel);
-        vernietigd.set(bronId, vernietigingId);
-      } catch {
-        // Een half geschreven laatste regel na een crash telt niet mee.
-      }
+    for (const { bronId, vernietigingId } of await leesLog(snapshotPath)) {
+      vernietigd.set(bronId, vernietigingId);
     }
 
     return vernietigd;
+  }
+
+  // Map bronId → tijdstip van vernietiging; nodig bij hervatting na een crash, zodat het
+  // event Vernietigen het oorspronkelijke tijdstip houdt.
+  async leesVernietigdTijdstippen(snapshotPath) {
+    const tijdstippen = new Map();
+
+    for (const { bronId, tijdstip } of await leesLog(snapshotPath)) {
+      tijdstippen.set(bronId, tijdstip);
+    }
+
+    return tijdstippen;
   }
 
   // Voegt regels toe en wacht tot ze op schijf staan (datasync), zodat een vernietiging
@@ -83,6 +74,36 @@ export class CsvZaakSource {
       await handle.close();
     }
   }
+}
+
+async function leesLog(snapshotPath) {
+  let tekst;
+
+  try {
+    tekst = await fs.readFile(vernietigingslogPad(snapshotPath), 'utf8');
+  } catch (error) {
+    if (error.code === 'ENOENT') {
+      return [];
+    }
+
+    throw error;
+  }
+
+  const regels = [];
+
+  for (const regel of tekst.split('\n')) {
+    if (!regel.trim()) {
+      continue;
+    }
+
+    try {
+      regels.push(JSON.parse(regel));
+    } catch {
+      // Een half geschreven laatste regel na een crash telt niet mee.
+    }
+  }
+
+  return regels;
 }
 
 export function vernietigingslogPad(snapshotPath) {

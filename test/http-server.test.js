@@ -33,9 +33,10 @@ async function metServer(t, { selectieService, maxBodyBytes, logRequests = false
 
   const baseUrl = `http://127.0.0.1:${server.address().port}`;
   return async (pad, { method = 'GET', body, rawBody, headers = {} } = {}) => {
-    const response = await fetch(`${baseUrl}${pad}`, {
+    // Stekker API v2: paden onder /v2 en een Idempotency-Key op elke POST (tenzij de test die zelf zet).
+    const response = await fetch(`${baseUrl}/v2${pad}`, {
       method,
-      headers: { ...(body || rawBody ? { 'content-type': 'application/json' } : {}), ...headers },
+      headers: { ...(body || rawBody ? { 'content-type': 'application/json' } : {}), ...(method === 'POST' ? { 'Idempotency-Key': crypto.randomUUID() } : {}), ...headers },
       body: rawBody ?? (body ? JSON.stringify(body) : undefined)
     });
     return { status: response.status, headers: response.headers, body: await response.json() };
@@ -92,7 +93,7 @@ test('valideert peildatum', async (t) => {
 test('valideert offset en limit van de kandidatenpagina', async (t) => {
   const request = await metServer(t);
   const selectie = await request('/selecties', { method: 'POST', body: { peildatum: '2026-09-25' } });
-  const pad = `/selecties/${selectie.body.selectieId}/objecten`;
+  const pad = `/selecties/${selectie.body.selectieId}/vernietigingskandidaten`;
 
   for (const query of ['limit=0', 'limit=501', 'limit=abc', 'limit=1.5', 'offset=-1']) {
     const response = await request(`${pad}?${query}`);
@@ -138,7 +139,7 @@ test('logt per request één regel met correlatieId, zonder body', async (t) => 
   const regel = JSON.parse(logregels[0]);
   assert.equal(regel.correlatieId, 'taak-9:job-1');
   assert.equal(regel.methode, 'POST');
-  assert.equal(regel.pad, '/selecties');
+  assert.equal(regel.pad, '/v2/selecties');
   assert.equal(regel.status, 202);
   assert.equal(typeof regel.duurMs, 'number');
   assert.doesNotMatch(logregels[0], /peildatum|2026-09-25/);
@@ -147,7 +148,7 @@ test('logt per request één regel met correlatieId, zonder body', async (t) => 
 test('pagineert met een cursor: alle kandidaten precies één keer, laatste pagina zonder nextCursor', async (t) => {
   const request = await metServer(t);
   const selectie = await request('/selecties', { method: 'POST', body: { peildatum: '2026-09-25' } });
-  const pad = `/selecties/${selectie.body.selectieId}/objecten`;
+  const pad = `/selecties/${selectie.body.selectieId}/vernietigingskandidaten`;
   const ids = [];
   let pagina = await request(`${pad}?limit=40`);
   let paginas = 1;
@@ -171,7 +172,7 @@ test('weigert een ongeldige cursor, een cursor van een andere selectie en cursor
   const request = await metServer(t);
   const selectieA = await request('/selecties', { method: 'POST', body: { peildatum: '2026-09-25' } });
   const selectieB = await request('/selecties', { method: 'POST', body: { peildatum: '2026-09-25' } });
-  const padA = `/selecties/${selectieA.body.selectieId}/objecten`;
+  const padA = `/selecties/${selectieA.body.selectieId}/vernietigingskandidaten`;
   const cursorA = (await request(`${padA}?limit=10`)).body.nextCursor;
   const gemanipuleerd = Buffer.from(JSON.stringify({ s: selectieA.body.selectieId, o: -5 })).toString('base64url');
 
@@ -179,5 +180,5 @@ test('weigert een ongeldige cursor, een cursor van een andere selectie en cursor
     assert.equal((await request(`${padA}?${query}`)).status, 400, query);
   }
 
-  assert.equal((await request(`/selecties/${selectieB.body.selectieId}/objecten?cursor=${cursorA}`)).status, 400);
+  assert.equal((await request(`/selecties/${selectieB.body.selectieId}/vernietigingskandidaten?cursor=${cursorA}`)).status, 400);
 });

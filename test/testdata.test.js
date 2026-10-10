@@ -65,13 +65,13 @@ test('gewijzigde bronrecords uit de variantendataset leveren CHANGED op', async 
     vernietigingRepository: new InMemoryVernietigingRepository(),
     processingDelayMs: 0
   });
-  const objecten = selectie.kandidaten.map(({ vernietigingskandidaatId, bronId }) => ({ vernietigingskandidaatId, bronId }));
+  const objecten = selectie.kandidaten.map(({ vernietigingskandidaatId, identificatie }) => ({ vernietigingskandidaatId, identificatie }));
   const { vernietigingId } = vernietigingService.startVernietiging({
     selectieId: selectie.selectieId,
     cockpitTaakId: 'taak-varianten',
     besluitReferentie: 'besluit-varianten'
   });
-  vernietigingService.voegBatchToe(vernietigingId, { batchNummer: 1, objecten });
+  vernietigingService.voegBatchToe(vernietigingId, { batchNummer: 1, vernietigingskandidaten: objecten });
   const afgerond = await vernietigingService.vrijgeven(vernietigingId, { aantalBatches: 1, aantalKandidaten: objecten.length });
 
   assert.equal(afgerond.status, 'PARTIAL');

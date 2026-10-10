@@ -39,6 +39,9 @@ export function parseScenario(env = process.env) {
   return {
     resultaatPercentages: percentages,
     selectieFail: env.SCENARIO_SELECTIE_FAIL === 'true',
+    // Levert ook bronrecords met waardering B (Blijvend te bewaren) als kandidaat, om de
+    // automatische uitsluiting in de Cockpit te testen (ADR-0005, B-M1).
+    leverNietV: env.SCENARIO_LEVER_NIET_V === 'true',
     http: {
       failFirstN: leesGeheelGetal(env, 'SCENARIO_HTTP_FAIL_FIRST_N', 0, 0, 1000),
       failStatus,

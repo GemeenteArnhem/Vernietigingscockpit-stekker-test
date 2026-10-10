@@ -1,8 +1,13 @@
 import crypto from 'node:crypto';
+import { Begrippenlijst, begrip } from '../config/mdto-config.js';
 import { GEEN_SCENARIO, scenarioResultaat } from '../config/scenario-config.js';
 import { stekkerConfig } from '../config/stekker-config.js';
+import { maakSpecificatieXml } from '../domain/mdto-xml.js';
+import { onderdelen, verschilInOnderdelen } from '../domain/onderdelen.js';
 import { SelectieStatus, Uitvoeringsresultaat, VernietigingStatus } from '../domain/status.js';
+import { mapBronrecordToKandidaat, technischeSleutel, validateBronrecord } from '../domain/vernietigingskandidaat.js';
 import { ConflictError, ResourceNotFoundError, ValidationError } from './errors.js';
+import { canoniekeJson, Idempotentie } from './idempotentie.js';
 import { InMemoryIdempotencyRepository } from '../infrastructure/repositories/in-memory-idempotency-repository.js';
 
 export { ConflictError, ResourceNotFoundError, ValidationError };
@@ -15,17 +20,17 @@ export class VernietigingService {
     clock = () => new Date(),
     processingDelayMs = stekkerConfig.vernietigingProcessingDelayMs,
     idempotencyRepository = new InMemoryIdempotencyRepository(),
-    idempotencyKeyRequired = stekkerConfig.idempotencyKeyRequired,
-    scenario = stekkerConfig.scenario ?? GEEN_SCENARIO
+    scenario = stekkerConfig.scenario ?? GEEN_SCENARIO,
+    mdto = stekkerConfig.mdto
   }) {
     this.zaakSource = zaakSource;
     this.selectieService = selectieService;
     this.vernietigingRepository = vernietigingRepository;
     this.clock = clock;
     this.processingDelayMs = processingDelayMs;
-    this.idempotencyRepository = idempotencyRepository;
-    this.idempotencyKeyRequired = idempotencyKeyRequired;
+    this.idempotentie = new Idempotentie(idempotencyRepository);
     this.scenario = scenario;
+    this.mdto = mdto;
     this.lopendeVerwerkingen = new Map();
     this.snapshotLocks = new Map();
     this.snapshotCache = new Map();
@@ -38,7 +43,7 @@ export class VernietigingService {
     besluitReferentie,
     vernietigingsdossierId
   }, { idempotencyKey } = {}) {
-    const idempotentie = this.controleerIdempotentie('POST /vernietigingen', idempotencyKey, {
+    const idempotentie = this.idempotentie.controleer('POST /vernietigingen', idempotencyKey, {
       selectieId,
       cockpitTaakId,
       besluitReferentie,
@@ -93,7 +98,7 @@ export class VernietigingService {
     };
 
     this.vernietigingRepository.save(vernietiging);
-    this.registreerIdempotentie(idempotentie, vernietiging.vernietigingId);
+    this.idempotentie.registreer(idempotentie, { vernietigingId: vernietiging.vernietigingId });
     return vernietiging;
   }
 
@@ -101,13 +106,16 @@ export class VernietigingService {
     return this.vernietigingRepository.findById(vernietigingId);
   }
 
-  voegBatchToe(vernietigingId, { batchNummer, objecten }, { idempotencyKey } = {}) {
+  voegBatchToe(vernietigingId, { batchNummer, vernietigingskandidaten }, { idempotencyKey } = {}) {
     const vernietiging = this.mustGetVernietiging(vernietigingId);
-    const idempotentie = this.controleerIdempotentie(`POST /vernietigingen/${vernietigingId}/batches`, idempotencyKey, {
+    const idempotentie = this.idempotentie.controleer(`POST /vernietigingen/${vernietigingId}/batches`, idempotencyKey, {
       batchNummer,
-      objecten: Array.isArray(objecten)
-        ? objecten.map((object) => ({ vernietigingskandidaatId: object?.vernietigingskandidaatId, bronId: object?.bronId }))
-        : objecten
+      vernietigingskandidaten: Array.isArray(vernietigingskandidaten)
+        ? vernietigingskandidaten.map((kandidaat) => ({
+            vernietigingskandidaatId: kandidaat?.vernietigingskandidaatId,
+            identificatie: kandidaat?.identificatie
+          }))
+        : vernietigingskandidaten
     });
 
     // Een herhaling mag ook na vrijgeven: de cockpit kan na een crash niet weten of de batch al binnen was.
@@ -123,23 +131,25 @@ export class VernietigingService {
       throw new ValidationError('batchNummer moet een positief geheel getal zijn.');
     }
 
-    if (!Array.isArray(objecten) || objecten.length === 0) {
-      throw new ValidationError('objecten moet minimaal een kandidaat bevatten.');
+    if (!Array.isArray(vernietigingskandidaten) || vernietigingskandidaten.length === 0) {
+      throw new ValidationError('vernietigingskandidaten moet minimaal een kandidaat bevatten.');
     }
 
+    // Intern blijft per object de technische sleutel (bronId) bewaard, afgeleid uit de identificatie.
     const normalizedBatch = {
       batchNummer,
       ontvangenTijdstip: this.clock().toISOString(),
-      objecten: objecten.map((object) => ({
-        vernietigingskandidaatId: object.vernietigingskandidaatId,
-        bronId: object.bronId
+      objecten: vernietigingskandidaten.map((kandidaat) => ({
+        vernietigingskandidaatId: kandidaat?.vernietigingskandidaatId,
+        identificatie: kandidaat?.identificatie,
+        bronId: technischeSleutel(kandidaat?.identificatie, this.mdto)
       }))
     };
 
     const existingBatch = vernietiging.batches.find((batch) => batch.batchNummer === batchNummer);
 
     if (existingBatch) {
-      if (JSON.stringify(existingBatch.objecten) !== JSON.stringify(normalizedBatch.objecten)) {
+      if (canoniekeJson(existingBatch.objecten) !== canoniekeJson(normalizedBatch.objecten)) {
         throw new ConflictError('BATCH_CONFLICT', 'BatchNummer bestaat al met een afwijkende inhoud.');
       }
 
@@ -154,44 +164,12 @@ export class VernietigingService {
     vernietiging.totaalObjecten = this.telObjecten(vernietiging);
 
     this.vernietigingRepository.save(vernietiging);
-    this.registreerIdempotentie(idempotentie, vernietigingId, { batchNummer });
+    this.idempotentie.registreer(idempotentie, { vernietigingId, batchNummer });
     return this.toBatchResultaat(vernietiging, batchNummer);
   }
 
-  // Idempotency-Key, per endpoint (scope). Dezelfde key met dezelfde inhoud levert
-  // dezelfde resource in de actuele stand; dezelfde key met andere inhoud geeft 409.
-  controleerIdempotentie(scope, idempotencyKey, request) {
-    const key = typeof idempotencyKey === 'string' ? idempotencyKey.trim() : '';
-
-    if (!key) {
-      if (this.idempotencyKeyRequired) {
-        throw new ValidationError('Idempotency-Key is verplicht voor deze stekker (IDEMPOTENCY_KEY_REQUIRED=true).');
-      }
-
-      return {};
-    }
-
-    const vingerafdruk = vingerafdrukVan(request);
-    const registratie = this.idempotencyRepository.find(scope, key);
-
-    if (registratie && registratie.vingerafdruk !== vingerafdruk) {
-      throw new ConflictError(
-        'IDEMPOTENCY_KEY_CONFLICT',
-        'Idempotency-Key is al gebruikt voor een verzoek met een andere inhoud.'
-      );
-    }
-
-    return { scope, key, vingerafdruk, registratie };
-  }
-
-  registreerIdempotentie({ scope, key, vingerafdruk }, vernietigingId, extra = {}) {
-    if (key) {
-      this.idempotencyRepository.save(scope, key, { vingerafdruk, vernietigingId, ...extra });
-    }
-  }
-
-  // Een batch wordt alleen geaccepteerd als elk object een kandidaat uit de selectie is,
-  // met precies het bronId dat de stekker voor die kandidaat heeft vastgelegd.
+  // Een batch wordt alleen geaccepteerd als elke kandidaat uit de selectie komt, met
+  // precies de identificatie die de stekker voor die kandidaat heeft geleverd.
   valideerObjecten(vernietiging, objecten) {
     const selectie = this.selectieService.getSelectie(vernietiging.selectieId);
     const kandidaatById = new Map(
@@ -202,9 +180,10 @@ export class VernietigingService {
       vernietiging.batches.flatMap((batch) => batch.objecten.map((object) => [object.vernietigingskandidaatId, batch.batchNummer]))
     );
 
-    for (const { vernietigingskandidaatId, bronId } of objecten) {
-      if (typeof vernietigingskandidaatId !== 'string' || !vernietigingskandidaatId || typeof bronId !== 'string' || !bronId) {
-        throw new ValidationError('Elk object moet een vernietigingskandidaatId en een bronId bevatten.');
+    for (const { vernietigingskandidaatId, identificatie } of objecten) {
+      if (typeof vernietigingskandidaatId !== 'string' || !vernietigingskandidaatId
+        || !Array.isArray(identificatie) || identificatie.length === 0) {
+        throw new ValidationError('Elke kandidaat moet een vernietigingskandidaatId en een identificatie bevatten.');
       }
 
       if (inDezeBatch.has(vernietigingskandidaatId)) {
@@ -218,8 +197,8 @@ export class VernietigingService {
         throw new ValidationError(`Kandidaat ${vernietigingskandidaatId} komt niet voor in selectie ${vernietiging.selectieId}.`);
       }
 
-      if (kandidaat.bronId !== bronId) {
-        throw new ValidationError(`bronId ${bronId} hoort niet bij kandidaat ${vernietigingskandidaatId}.`);
+      if (canoniekeJson(kandidaat.identificatie) !== canoniekeJson(identificatie)) {
+        throw new ValidationError(`identificatie hoort niet bij kandidaat ${vernietigingskandidaatId}.`);
       }
 
       if (alAangeleverd.has(vernietigingskandidaatId)) {
@@ -244,7 +223,7 @@ export class VernietigingService {
 
   async vrijgeven(vernietigingId, { aantalBatches, aantalKandidaten }, { idempotencyKey } = {}) {
     const vernietiging = this.mustGetVernietiging(vernietigingId);
-    const idempotentie = this.controleerIdempotentie(`POST /vernietigingen/${vernietigingId}/vrijgeven`, idempotencyKey, {
+    const idempotentie = this.idempotentie.controleer(`POST /vernietigingen/${vernietigingId}/vrijgeven`, idempotencyKey, {
       aantalBatches,
       aantalKandidaten
     });
@@ -265,12 +244,15 @@ export class VernietigingService {
       throw new ConflictError('AANTALLEN_CONFLICT', 'Aangeleverde aantallen komen niet overeen met ontvangen batches.');
     }
 
+    // De wijze van vernietiging is verplicht vanaf RUNNING (ADR-0005, B-M4).
     const running = this.vernietigingRepository.save({
       ...vernietiging,
       status: VernietigingStatus.RUNNING,
-      totaalBatches: aantalBatches
+      totaalBatches: aantalBatches,
+      vernietigingsmethode: begrip(this.mdto.vernietigingsmethode, Begrippenlijst.vernietigingsmethoden),
+      vernietigingsmethodeToelichting: this.mdto.vernietigingsmethodeToelichting
     });
-    this.registreerIdempotentie(idempotentie, vernietigingId);
+    this.idempotentie.registreer(idempotentie, { vernietigingId });
 
     // Met vertraging 0 verwerkt de stekker synchroon (bedoeld voor unittests).
     if (this.processingDelayMs <= 0) {
@@ -363,21 +345,29 @@ export class VernietigingService {
     // lezen en toevoegen gebeurt daarom onder een lock per snapshot.
     const batchResultaten = await this.metSnapshotLock(selectie.snapshotBronPath, async () => {
       const recordByBronId = await this.snapshotRecords(selectie.snapshotBronPath);
+      const huidigByBronId = await this.huidigeBronRecords();
       const vernietigd = await this.vernietigdeRecords(selectie.snapshotBronPath);
       const inDezeBatch = new Set();
       const nieuwVernietigd = [];
       const tijdstip = this.clock().toISOString();
+      // Bij hervatting na een crash: het oorspronkelijke tijdstip van vernietiging uit het log.
+      const hervat = batch.objecten.some((object) => vernietigd.get(object.bronId) === vernietiging.vernietigingId);
+      const eerdereTijdstippen = hervat ? await this.zaakSource.leesVernietigdTijdstippen(selectie.snapshotBronPath) : new Map();
 
       const resultaten = batch.objecten.map((object) => {
         const { resultaat, vernietigen } = executeObject({
           kandidaat: kandidaatById.get(object.vernietigingskandidaatId),
           record: recordByBronId.get(object.bronId),
+          huidigRecord: huidigByBronId.get(object.bronId),
+          mdto: this.mdto,
           vernietigdDoor: vernietigd.get(object.bronId) ?? (inDezeBatch.has(object.bronId) ? vernietiging.vernietigingId : undefined),
           object,
           batchNummer,
           vernietigingId: vernietiging.vernietigingId,
           correlatieId: `${vernietiging.vernietigingId}-${batchNummer}-${object.vernietigingskandidaatId}`,
-          scenario: this.scenario
+          scenario: this.scenario,
+          tijdstip: eerdereTijdstippen.get(object.bronId) ?? tijdstip,
+          methode: this.mdto.vernietigingsmethode
         });
 
         if (vernietigen) {
@@ -409,6 +399,13 @@ export class VernietigingService {
     }
 
     return this.snapshotCache.get(snapshotPath);
+  }
+
+  // De bron zoals die nú is (niet de snapshot), om te zien of een kandidaat sinds de
+  // selectie is veranderd (ADR-0007, DR-04). Per batch opnieuw ingelezen: de bron kan wijzigen.
+  async huidigeBronRecords() {
+    const records = await this.zaakSource.findAll();
+    return new Map(records.map((record) => [record.bronId, record]));
   }
 
   // Alleen deze service schrijft het log, dus na één keer inlezen houdt de cache het bij.
@@ -459,6 +456,40 @@ export class VernietigingService {
     };
   }
 
+  // MDTO-XML-specificatie van een vernietigde kandidaat (ADR-0005, B-M2). Alleen bij SUCCESS.
+  getSpecificatie(vernietigingId, vernietigingskandidaatId) {
+    const vernietiging = this.mustGetVernietiging(vernietigingId);
+    const aangeboden = vernietiging.batches
+      .flatMap((batch) => batch.objecten)
+      .some((object) => object.vernietigingskandidaatId === vernietigingskandidaatId);
+
+    if (!aangeboden) {
+      throw new ResourceNotFoundError(
+        'KANDIDAAT_NOT_FOUND',
+        `Kandidaat ${vernietigingskandidaatId} is niet aangeboden in vernietiging ${vernietigingId}.`
+      );
+    }
+
+    const resultaat = vernietiging.resultaten.find((item) => item.vernietigingskandidaatId === vernietigingskandidaatId);
+
+    if (resultaat?.resultaat !== Uitvoeringsresultaat.SUCCESS) {
+      throw new ConflictError(
+        'SPECIFICATIE_NIET_BESCHIKBAAR',
+        `Er is geen specificatie: kandidaat ${vernietigingskandidaatId} heeft resultaat ${resultaat?.resultaat ?? 'nog geen'}.`
+      );
+    }
+
+    const kandidaat = this.selectieService.getSelectie(vernietiging.selectieId)?.kandidaten
+      .find((item) => item.vernietigingskandidaatId === vernietigingskandidaatId);
+
+    return maakSpecificatieXml({
+      kandidaat,
+      event: resultaat.event,
+      archiefvormer: this.mdto.archiefvormer,
+      vernietigingsmethodeToelichting: vernietiging.vernietigingsmethodeToelichting
+    });
+  }
+
   mustGetVernietiging(vernietigingId) {
     const vernietiging = this.getVernietiging(vernietigingId);
 
@@ -472,15 +503,26 @@ export class VernietigingService {
 
 // Bepaalt het resultaat voor één aangeboden object. Muteert niets: of het record
 // vernietigd moet worden, komt terug als `vernietigen` en wordt door de aanroeper vastgelegd.
-function executeObject({ kandidaat, record, vernietigdDoor, object, batchNummer, vernietigingId, correlatieId, scenario }) {
+function executeObject({ kandidaat, record, huidigRecord, mdto, vernietigdDoor, object, batchNummer, vernietigingId, correlatieId, scenario, tijdstip, methode }) {
   const baseResult = {
     vernietigingskandidaatId: object.vernietigingskandidaatId,
-    bronId: object.bronId,
+    identificatie: object.identificatie,
     batchNummer,
     logReference: `log-${correlatieId}`,
     correlatieId
   };
   const zonderVernietiging = (resultaat) => ({ resultaat: { ...baseResult, ...resultaat }, vernietigen: false });
+  // MDTO-event Vernietigen met het tijdstip van vernietiging (Archiefbesluit art. 8).
+  const vernietigd = () => ({
+    ...baseResult,
+    resultaat: Uitvoeringsresultaat.SUCCESS,
+    event: {
+      eventType: begrip('Vernietigen', Begrippenlijst.eventtypen),
+      eventTijd: tijdstip,
+      eventResultaat: `Vernietigd; methode: ${methode}.`
+    },
+    bronstatus: 'VERNIETIGD'
+  });
 
   // Vangnet naast de controle bij aanlevering: vernietig nooit een bronrecord
   // dat niet bij de aangeboden kandidaat hoort.
@@ -496,7 +538,7 @@ function executeObject({ kandidaat, record, vernietigdDoor, object, batchNummer,
   // Hervatting na een crash tussen het vastleggen in het log en het opslaan van de
   // resultaten: dit record is al door déze vernietiging vernietigd.
   if (kandidaat && record && vernietigdDoor === vernietigingId) {
-    return zonderVernietiging({ resultaat: Uitvoeringsresultaat.SUCCESS, bronstatus: 'VERNIETIGD' });
+    return { resultaat: vernietigd(), vernietigen: false };
   }
 
   if (!kandidaat || !record || vernietigdDoor || record.bronstatus === 'VERNIETIGD') {
@@ -517,6 +559,28 @@ function executeObject({ kandidaat, record, vernietigdDoor, object, batchNummer,
     });
   }
 
+  if (!huidigRecord) {
+    return zonderVernietiging({
+      resultaat: Uitvoeringsresultaat.NOT_FOUND,
+      foutcode: 'NOT_FOUND',
+      foutmelding: 'Bronrecord bestaat niet meer in de bron.',
+      bronstatus: 'ONTBREEKT'
+    });
+  }
+
+  // De kandidaat wordt alleen als geheel vernietigd, en alleen met de onderdelen uit de
+  // momentopname. Zijn er onderdelen bijgekomen of verdwenen, dan niets (ADR-0007, DR-04).
+  const wijziging = wijzigingInOnderdelen(kandidaat, huidigRecord, mdto);
+
+  if (wijziging) {
+    return zonderVernietiging({
+      resultaat: Uitvoeringsresultaat.CHANGED,
+      foutcode: 'ONDERDELEN_GEWIJZIGD',
+      foutmelding: `${wijziging} Niets van deze kandidaat is vernietigd.`,
+      bronstatus: 'GEWIJZIGD'
+    });
+  }
+
   // Testscenario: een vast deel van de kandidaten krijgt een afwijkend resultaat;
   // het bronrecord blijft dan ongewijzigd.
   const afwijkend = scenarioResultaat(scenario, object.vernietigingskandidaatId);
@@ -530,31 +594,24 @@ function executeObject({ kandidaat, record, vernietigdDoor, object, batchNummer,
     });
   }
 
-  return {
-    resultaat: { ...baseResult, resultaat: Uitvoeringsresultaat.SUCCESS, bronstatus: 'VERNIETIGD' },
-    vernietigen: true
-  };
+  return { resultaat: vernietigd(), vernietigen: true };
 }
 
-function vingerafdrukVan(waarde) {
-  return crypto.createHash('sha256').update(canoniekeJson(waarde)).digest('hex');
-}
-
-// JSON met gesorteerde sleutels, zodat de volgorde van velden in het verzoek niet uitmaakt.
-function canoniekeJson(waarde) {
-  if (Array.isArray(waarde)) {
-    return `[${waarde.map(canoniekeJson).join(',')}]`;
+// Beschrijft hoe de onderdelen in de bron afwijken van de momentopname, of undefined als
+// ze gelijk zijn. Een bronrecord dat geen geldige kandidaat meer oplevert, telt als gewijzigd.
+function wijzigingInOnderdelen(kandidaat, huidigRecord, mdto) {
+  if (!validateBronrecord(huidigRecord, 0).valid) {
+    return 'Bronrecord is sinds selectie ongeldig geworden.';
   }
 
-  if (waarde && typeof waarde === 'object') {
-    return `{${Object.keys(waarde)
-      .filter((sleutel) => waarde[sleutel] !== undefined)
-      .sort()
-      .map((sleutel) => `${JSON.stringify(sleutel)}:${canoniekeJson(waarde[sleutel])}`)
-      .join(',')}}`;
+  const huidig = onderdelen(mapBronrecordToKandidaat(huidigRecord, mdto));
+  const { bijgekomen, verdwenen } = verschilInOnderdelen(onderdelen(kandidaat), huidig);
+
+  if (bijgekomen.length === 0 && verdwenen.length === 0) {
+    return undefined;
   }
 
-  return JSON.stringify(waarde) ?? 'null';
+  return `Onderdelen gewijzigd sinds selectie: ${bijgekomen.length} bijgekomen, ${verdwenen.length} verdwenen.`;
 }
 
 function telResultaten(resultaten) {

@@ -28,11 +28,12 @@ test('cockpit-sequence volgens de stekker-specificatie', async () => {
   const server = await startTestServer();
 
   try {
-    const baseUrl = `http://127.0.0.1:${server.address().port}`;
+    const hostUrl = `http://127.0.0.1:${server.address().port}`;
+    const baseUrl = `${hostUrl}/v2`;
     const taak = 'cockpit-sequence-taak-001';
     logStep(`Stekker gestart op ${baseUrl}`);
 
-    const health = await httpJson(`${baseUrl}/health`);
+    const health = await httpJson(`${hostUrl}/health`);
     assert.equal(health.status, 200);
     assert.equal(health.body.status, 'ok');
     logStep('Healthcheck OK');
@@ -46,7 +47,7 @@ test('cockpit-sequence volgens de stekker-specificatie', async () => {
     assert.equal(selectieStart.body.status, 'RUNNING');
     logStep(`Selectie gestart: ${selectieStart.body.selectieId}`);
 
-    const earlyObjects = await httpJson(`${baseUrl}/selecties/${selectieStart.body.selectieId}/objecten?offset=0&limit=1`, {
+    const earlyObjects = await httpJson(`${baseUrl}/selecties/${selectieStart.body.selectieId}/vernietigingskandidaten?offset=0&limit=1`, {
       expectedStatuses: [409]
     });
     assert.equal(earlyObjects.body.code, 'SELECTIE_NOT_READY');
@@ -63,7 +64,7 @@ test('cockpit-sequence volgens de stekker-specificatie', async () => {
 
     // Vernietiging, in deterministische volgorde en in meerdere batches
     const aangeboden = kandidaten
-      .map(({ vernietigingskandidaatId, bronId }) => ({ vernietigingskandidaatId, bronId }))
+      .map(({ vernietigingskandidaatId, identificatie }) => ({ vernietigingskandidaatId, identificatie }))
       .sort((a, b) => a.vernietigingskandidaatId.localeCompare(b.vernietigingskandidaatId))
       .slice(0, sequenceConfig.aantalKandidaten);
     const batches = chunk(aangeboden, sequenceConfig.batchSize);
@@ -88,7 +89,7 @@ test('cockpit-sequence volgens de stekker-specificatie', async () => {
       const batch = await httpJson(`${baseUrl}/vernietigingen/${vernietigingId}/batches`, {
         method: 'POST',
         headers: { 'Idempotency-Key': `${taak}:stekker:batch:${index + 1}` },
-        body: { batchNummer: index + 1, objecten }
+        body: { batchNummer: index + 1, vernietigingskandidaten: objecten }
       });
       assert.equal(batch.status, 202);
       assert.equal(batch.body.batchNummer, index + 1);
@@ -111,7 +112,7 @@ test('cockpit-sequence volgens de stekker-specificatie', async () => {
     const herhaaldeBatch = await httpJson(`${baseUrl}/vernietigingen/${vernietigingId}/batches`, {
       method: 'POST',
       headers: { 'Idempotency-Key': `${taak}:stekker:batch:1` },
-      body: { batchNummer: 1, objecten: batches[0] }
+      body: { batchNummer: 1, vernietigingskandidaten: batches[0] }
     });
     assert.equal(herhaaldeBatch.status, 202);
     const herhaaldeVrijgave = await httpJson(`${baseUrl}/vernietigingen/${vernietigingId}/vrijgeven`, vrijgaveVerzoek);
@@ -147,9 +148,9 @@ test('cockpit-sequence volgens de stekker-specificatie', async () => {
       resultaatPerKandidaat.set(resultaat.vernietigingskandidaatId, resultaat);
     }
     for (const object of aangeboden) {
-      assert.equal(
-        resultaatPerKandidaat.get(object.vernietigingskandidaatId)?.bronId,
-        object.bronId,
+      assert.deepEqual(
+        resultaatPerKandidaat.get(object.vernietigingskandidaatId)?.identificatie,
+        object.identificatie,
         `Geen passend resultaat voor ${object.vernietigingskandidaatId}`
       );
     }
@@ -168,7 +169,7 @@ test('cockpit-sequence volgens de stekker-specificatie', async () => {
     });
     await httpJson(`${baseUrl}/vernietigingen/${tweedeVernietiging.body.vernietigingId}/batches`, {
       method: 'POST',
-      body: { batchNummer: 1, objecten: [aangeboden[0]] }
+      body: { batchNummer: 1, vernietigingskandidaten: [aangeboden[0]] }
     });
     const tweedeVrijgave = await httpJson(`${baseUrl}/vernietigingen/${tweedeVernietiging.body.vernietigingId}/vrijgeven`, {
       method: 'POST',
@@ -232,7 +233,7 @@ async function haalAlleKandidatenOp(baseUrl, selectieId) {
 
   do {
     const pagina = await httpJson(
-      `${baseUrl}/selecties/${selectieId}/objecten?offset=${kandidaten.length}&limit=${sequenceConfig.pageSize}`
+      `${baseUrl}/selecties/${selectieId}/vernietigingskandidaten?offset=${kandidaten.length}&limit=${sequenceConfig.pageSize}`
     );
     totaal = pagina.body.totaal;
 
@@ -265,7 +266,7 @@ async function waitForEindstatus(baseUrl, vernietigingId) {
 async function httpJson(url, { method = 'GET', body, headers = {}, expectedStatuses } = {}) {
   const response = await fetch(url, {
     method,
-    headers: { ...(body ? { 'content-type': 'application/json' } : {}), ...headers },
+    headers: { ...(body ? { 'content-type': 'application/json' } : {}), ...(method === 'POST' ? { 'Idempotency-Key': crypto.randomUUID() } : {}), ...headers },
     body: body ? JSON.stringify(body) : undefined
   });
   const responseBody = await response.json();

@@ -2,6 +2,22 @@
 
 Deze repository bevat de teststekker voor de Vernietigingscockpit. De architectuur en API-afspraken worden gelezen uit de naastliggende repository `Vernietigingscockpit`; deze repository werkt die architectuur niet bij.
 
+## Stekker API v2 (MDTO)
+
+De teststekker implementeert **Stekker API v2.0.0** (`spec/stekker-openapi-spec-v2.0.0.yaml`, kopie van `designrules/api/stekker-openapi-spec.yaml` uit de architectuurrepo). MDTO is leidend voor benaming en structuur (ADR-0005). Belangrijkste verschillen met v1:
+
+- alle endpoints staan onder `/v2` (behalve `GET /health`); elke response heeft de header `API-Version: 2.0.0`;
+- `Idempotency-Key` is verplicht op elke `POST`, ook `POST /selecties` (ADR-0004). Zonder key volgt `400 IDEMPOTENCY_KEY_MISSING`, met dezelfde key en andere inhoud `409 IDEMPOTENCY_KEY_REUSED`;
+- kandidaten volgen het MDTO-profiel: `identificatie` (technische sleutel en zaaknummer, elk met `identificatieBron`), `naam`, `aggregatieniveau`, `classificatie`, `dekkingInTijd`, `waardering` (B/V/N), `bewaartermijn` (trigger, startdatum, looptijd, einddatum), `informatiecategorie`, `gerelateerdInformatieobject`, `activiteit`;
+- `GET /v2/selecties/{selectieId}/vernietigingskandidaten` vervangt `/objecten`;
+- een batch bevat `vernietigingskandidaten` met `vernietigingskandidaatId` + `identificatie` (letterlijk zoals geselecteerd) in plaats van `objecten` met `bronId`;
+- een resultaat `SUCCESS` draagt het MDTO-event `Vernietigen` met `eventTijd`; een uitvoering vanaf `RUNNING` de `vernietigingsmethode` en `vernietigingsmethodeToelichting`;
+- nieuw: `GET /v2/vernietigingen/{vernietigingId}/specificaties/{vernietigingskandidaatId}` levert een MDTO-XML-document (MDTO-XML 1.0.1) van een vernietigde kandidaat, met een `bevatOnderdeel` per onderliggend informatieobject. De CSV-bron kent alleen het aantal onderliggende objecten; de teststekker maakt daarvoor fictieve kenmerken (`<zaaknummer>-D001` …). De tests valideren de XML tegen `spec/mdto/MDTO-XML1.0.1.xsd` (als Python met `lxml` beschikbaar is).
+
+De CSV-bron zelf houdt zijn eigen kolommen; de stekker zet ze bij selectie om naar MDTO (`src/domain/vernietigingskandidaat.js`). Een optionele kolom `aggregatieniveau` (Archief, Serie, Dossier, Archiefstuk) is toegestaan; zonder die kolom is elke zaak een `Dossier`. De bewaartermijn start de dag na `einddatum` (trigger *Afgehandeld*).
+
+> Runtime-gegevens van een v1-stekker (`runtime/`, of het runtime-volume in Docker) zijn niet bruikbaar met v2. Begin met een lege runtime-map of een nieuw volume.
+
 ## Testdata
 
 De eerste testset staat in:
@@ -77,13 +93,13 @@ test/                   geautomatiseerde tests
 
 De eerste werkende flow is:
 
-1. `POST /selecties` kopieert de default CSV-bron naar een selectie-snapshot onder `runtime/selecties/{selectieId}/bron-snapshot.csv`.
+1. `POST /v2/selecties` kopieert de default CSV-bron naar een selectie-snapshot onder `runtime/selecties/{selectieId}/bron-snapshot.csv`.
 2. De selectie blijft tijdelijk op `RUNNING`, zodat asynchroon bron- en selectiewerk gesimuleerd wordt.
 3. Na de ingestelde verwerkingstijd wordt de snapshot verwerkt en gaat de selectie naar `READY`.
-4. `GET /selecties/{selectieId}` geeft de selectiestatus en metadata terug.
-5. `GET /selecties/{selectieId}/objecten?offset=0&limit=100` levert vernietigingskandidaten gepagineerd op zodra de selectie `READY` is. Elke pagina met meer resultaten bevat een opake `nextCursor`; de volgende pagina haal je op met `?cursor={nextCursor}` (niet samen met `offset`). Een ongeldige cursor of een cursor van een andere selectie geeft `400`.
+4. `GET /v2/selecties/{selectieId}` geeft de selectiestatus en metadata terug.
+5. `GET /v2/selecties/{selectieId}/vernietigingskandidaten?offset=0&limit=100` levert vernietigingskandidaten gepagineerd op zodra de selectie `READY` is. Elke pagina met meer resultaten bevat een opake `nextCursor`; de volgende pagina haal je op met `?cursor={nextCursor}` (niet samen met `offset`). Een ongeldige cursor of een cursor van een andere selectie geeft `400`.
 
-De selectie gebruikt standaard peildatum `2026-09-25`. Alleen records met `waardering = VERNIETIGEN`, `statusVernietigingskandidaat = SELECTED` en een `vernietigingsdatum` op of voor de peildatum worden opgenomen als vernietigingskandidaat.
+De selectie gebruikt standaard peildatum `2026-09-25`. Alleen records met `waardering = VERNIETIGEN` (MDTO: `V`, Tijdelijk te bewaren), `statusVernietigingskandidaat = SELECTED` en een `vernietigingsdatum` (MDTO: `bewaartermijn.termijnEinddatum`) op of voor de peildatum worden opgenomen als vernietigingskandidaat.
 
 De default testset in `data/sociaal-domein-zaken.csv` wordt niet aangepast. Vernietiging kan straks plaatsvinden op de selectie-snapshot, zodat dezelfde bronset opnieuw gebruikt kan worden voor nieuwe selecties.
 
@@ -111,40 +127,53 @@ Ondersteunde configuratie:
 | `STEKKER_RUNTIME_LOCK_PATH` | `runtime/instance.lock` (op hetzelfde volume als de overige runtime-paden) |
 | `SELECTIE_PROCESSING_DELAY_MS` | `3000` |
 | `VERNIETIGING_PROCESSING_DELAY_MS` | `1000` (pauze vóór elke batch; `0` = synchroon, alleen voor tests) |
-| `IDEMPOTENCY_KEY_REQUIRED` | `false` (met `true` geeft een muterende vernietigingscall zonder `Idempotency-Key` een `400`) |
 | `MAX_BODY_BYTES` | `1048576` (grotere requests geven `400 REQUEST_TOO_LARGE`) |
 | `LOG_REQUESTS` | `true` (één JSON-logregel per request: methode, pad, status, duur, correlatieId; nooit bodies) |
+| `STEKKER_ARCHIEFVORMER` | `Gemeente Voorbeeld` (MDTO `archiefvormer` in de specificatie) |
+| `STEKKER_IDENTIFICATIEBRON_TECHNISCH` | `CSV-bron sociaal domein (technische sleutel)` (`identificatieBron` van `bronId`) |
+| `STEKKER_IDENTIFICATIEBRON_KENMERK` | `Zaaknummering gemeente Voorbeeld` (`identificatieBron` van het zaaknummer) |
+| `STEKKER_VERNIETIGINGSMETHODE` | `Overig` (label uit Cockpit-vernietigingsmethoden) |
+| `STEKKER_VERNIETIGINGSMETHODE_TOELICHTING` | toelichting over het vernietigingslog, zonder back-ups |
 
 ## Vernietigingsflow
 
 Vernietiging werkt op de selectie-snapshot, niet op de default testset.
 
-1. `POST /vernietigingen` maakt een vernietigingsuitvoering voor een `selectieId`.
-2. `POST /vernietigingen/{vernietigingId}/batches` levert vrijgegeven kandidaten aan. Elk object wordt bij aanlevering gecontroleerd:
-   - de kandidaat moet in de selectie voorkomen, met precies het `bronId` dat de stekker voor die kandidaat heeft geleverd (anders `400 VALIDATION_ERROR`);
+1. `POST /v2/vernietigingen` maakt een vernietigingsuitvoering voor een `selectieId`.
+2. `POST /v2/vernietigingen/{vernietigingId}/batches` levert vrijgegeven kandidaten aan (`vernietigingskandidaten`). Elke kandidaat wordt bij aanlevering gecontroleerd:
+   - de kandidaat moet in de selectie voorkomen, met precies de `identificatie` die de stekker voor die kandidaat heeft geleverd (anders `400 VALIDATION_ERROR`);
    - een kandidaat mag maar één keer in een batch staan (anders `400 VALIDATION_ERROR`);
    - een kandidaat die al in een andere batch is aangeleverd, geeft `409 KANDIDAAT_AL_AANGELEVERD`;
    - dezelfde batch opnieuw aanleveren met dezelfde inhoud is toegestaan; met andere inhoud geeft `409 BATCH_CONFLICT`.
 
-   Als vangnet controleert de stekker het `bronId` bij uitvoering opnieuw. Een object waarvan het `bronId` niet bij de kandidaat hoort, wordt nooit vernietigd en krijgt resultaat `FAILED` met foutcode `BRONID_MISMATCH`.
-3. `POST /vernietigingen/{vernietigingId}/vrijgeven` controleert de aantallen en start de technische verwerking. De stekker antwoordt direct met `202` en status `RUNNING`, en verwerkt daarna de batches één voor één (in volgorde van batchnummer), met `VERNIETIGING_PROCESSING_DELAY_MS` pauze vóór elke batch. Na elke batch zijn de resultaten en tellingen bijgewerkt.
-4. `GET /vernietigingen/{vernietigingId}` geeft de uitvoeringstatus en tellingen terug. Poll tot de status `COMPLETED`, `PARTIAL` of `FAILED` is. `FAILED` betekent dat de verwerking als geheel is mislukt (bijvoorbeeld doordat de snapshot niet leesbaar is).
-5. `GET /vernietigingen/{vernietigingId}/batches` levert de resultaten van alle batches; `GET /vernietigingen/{vernietigingId}/batches/{batchNummer}` die van één batch. Zolang een batch niet is verwerkt, is `resultaten` leeg.
+   Als vangnet controleert de stekker de technische sleutel (`bronId`, uit de `identificatie`) bij uitvoering opnieuw. Een object waarvan de sleutel niet bij de kandidaat hoort, wordt nooit vernietigd en krijgt resultaat `FAILED` met foutcode `BRONID_MISMATCH`.
+3. `POST /v2/vernietigingen/{vernietigingId}/vrijgeven` controleert de aantallen en start de technische verwerking. De stekker antwoordt direct met `202` en status `RUNNING`, en verwerkt daarna de batches één voor één (in volgorde van batchnummer), met `VERNIETIGING_PROCESSING_DELAY_MS` pauze vóór elke batch. Na elke batch zijn de resultaten en tellingen bijgewerkt.
+4. `GET /v2/vernietigingen/{vernietigingId}` geeft de uitvoeringstatus, tellingen (met `verwerkteBatches`) en vernietigingsmethode terug. Poll tot de status `COMPLETED`, `PARTIAL` of `FAILED` is. `FAILED` betekent dat de verwerking als geheel is mislukt (bijvoorbeeld doordat de snapshot niet leesbaar is).
+5. `GET /v2/vernietigingen/{vernietigingId}/batches` levert de resultaten van alle batches; `GET /v2/vernietigingen/{vernietigingId}/batches/{batchNummer}` die van één batch. Zolang een batch niet is verwerkt, is `resultaten` leeg. Bij `SUCCESS` bevat het resultaat het `event` *Vernietigen* met het tijdstip uit het vernietigingslog (ook na een hervatting).
+6. `GET /v2/vernietigingen/{vernietigingId}/specificaties/{vernietigingskandidaatId}` levert de MDTO-XML-specificatie van een vernietigde kandidaat. Zonder `SUCCESS` volgt `409 SPECIFICATIE_NIET_BESCHIKBAAR`, voor een niet-aangeboden kandidaat `404 KANDIDAAT_NOT_FOUND`.
 
 ### Idempotency-Key
 
-`POST /vernietigingen`, `POST /vernietigingen/{vernietigingId}/batches` en `POST /vernietigingen/{vernietigingId}/vrijgeven` ondersteunen de header `Idempotency-Key`, zodat de Cockpit na een crash of time-out veilig opnieuw kan proberen:
+Elke `POST` (`/selecties`, `/vernietigingen`, `…/batches`, `…/vrijgeven`) vereist de header `Idempotency-Key` (maximaal 200 tekens), zodat de Cockpit na een crash of time-out veilig opnieuw kan proberen:
 
 - dezelfde key met dezelfde inhoud levert dezelfde resource op, in de actuele stand (bijvoorbeeld een vernietiging die inmiddels `RUNNING` of `COMPLETED` is). Dit werkt ook na vrijgeven, dus ook voor het herhalen van een batch;
-- dezelfde key met een andere inhoud geeft `409 IDEMPOTENCY_KEY_CONFLICT`;
+- dezelfde key met een andere inhoud geeft `409 IDEMPOTENCY_KEY_REUSED`;
 - een key geldt per endpoint (en per vernietiging): dezelfde key op een ander endpoint telt als een andere key;
-- zonder key blijft het bestaande gedrag gelden. Met `IDEMPOTENCY_KEY_REQUIRED=true` is de key verplicht.
+- zonder key volgt `400 IDEMPOTENCY_KEY_MISSING`.
 
 Keys worden op het runtime-volume bewaard en overleven een herstart van de stekker.
 
 De eindstatus is `COMPLETED` als alle resultaten `SUCCESS` zijn, en `PARTIAL` zodra minstens één resultaat `FAILED`, `SKIPPED`, `NOT_FOUND` of `CHANGED` is.
 
 De snapshot `runtime/selecties/{selectieId}/bron-snapshot.csv` blijft onveranderd (de bevroren bronset). Elk vernietigd record wordt vastgelegd in een append-only log ernaast, `runtime/selecties/{selectieId}/vernietigd.log` (één JSON-regel per record: `bronId`, `vernietigingId`, `tijdstip`). Een tweede vernietigingspoging binnen dezelfde selectie op hetzelfde record levert daardoor `NOT_FOUND` op.
+
+**Uitvoeringsscope (ADR-0007, DR-04).** De snapshot legt per kandidaat de onderdelen vast: bij een archief, serie of dossier `aantalObjecten` onderdelen met de kenmerken `<zaaknummer>-D001` …; een archiefstuk heeft er geen. Bij uitvoering vergelijkt de stekker die met de bron-CSV zoals die op dat moment is:
+
+- staat het record niet meer in de bron: `NOT_FOUND` (`Bronrecord bestaat niet meer in de bron.`);
+- zijn er onderdelen bijgekomen of verdwenen, bijvoorbeeld doordat `aantalObjecten` in de bron is veranderd: `CHANGED` met foutcode `ONDERDELEN_GEWIJZIGD` voor de **hele kandidaat**; er wordt niets van vernietigd;
+- de specificatie van een vernietigde kandidaat bevat precies de onderdelen uit de snapshot.
+
+Om dit handmatig te testen: start een selectie, pas daarna `aantalObjecten` van een record in de bron-CSV aan (of verwijder de rij), en vernietig de kandidaat. Omdat de bron alleen een aantal kent, kan de teststekker het verwisselen van een onderdeel (één weg, één erbij) niet nabootsen.
 
 Een volgende `POST /selecties` kopieert opnieuw de ingestelde bron-CSV naar een nieuwe interne snapshot. De bron-CSV zelf wordt niet aangepast, dus kandidaten die in een eerdere selectie-snapshot zijn vernietigd, komen in een nieuwe selectie opnieuw uit de bron als die bron nog `SELECTED`/`ONVERANDERD` bevat.
 
@@ -166,7 +195,7 @@ Controles: handtekening (alleen `RS256` en `ES256`; `none` en HMAC worden altijd
 | `POST /selecties` | `selectie.write` |
 | `GET /selecties/…` | `selectie.read` |
 | `POST /vernietigingen`, `…/batches`, `…/vrijgeven` | `vernietiging.write` |
-| `GET /vernietigingen/…` | `vernietiging.read` |
+| `GET /vernietigingen/…` (ook `…/specificaties/…`) | `vernietiging.read` |
 
 Zonder of met een ongeldig token volgt `401 UNAUTHORIZED`, bij een ontbrekende scope `403 FORBIDDEN`, beide met een `WWW-Authenticate`-header. `GET /health` blijft openbaar. De JWKS wordt gecachet; een token met een onbekende `kid` (sleutelrotatie) leidt tot opnieuw ophalen, maar hooguit eens per 30 seconden. Het ophalen heeft een time-out van 5 seconden en gelijktijdige requests delen één opvraging, zodat een hangende identity provider requests niet laat hangen (die krijgen dan `401`).
 
@@ -185,6 +214,7 @@ Standaard gedraagt de stekker zich 'gezond'. Voor het testen van foutpaden in de
 | `SCENARIO_NOT_FOUND_PERCENTAGE` | `0` | Idem, `NOT_FOUND` |
 | `SCENARIO_SKIPPED_PERCENTAGE` | `0` | Idem, `SKIPPED` |
 | `SCENARIO_SELECTIE_FAIL` | `false` | Met `true` eindigt elke selectie op `FAILED` (`aantalFouten = 1`) |
+| `SCENARIO_LEVER_NIET_V` | `false` | Met `true` levert de stekker ook records met waardering `BEWAREN` (MDTO `B`) als kandidaat, om de automatische uitsluiting in de Cockpit te testen (ADR-0005, B-M1). De variantendataset bevat zulke records |
 
 Welke kandidaat welk resultaat krijgt, hangt af van een hash van het kandidaat-id; dezelfde kandidaat krijgt dus altijd hetzelfde resultaat. De percentages samen zijn maximaal 100. Een kandidaat met een afwijkend resultaat wordt niet vernietigd; de foutcode is `SCENARIO_<RESULTAAT>`.
 

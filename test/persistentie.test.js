@@ -38,7 +38,7 @@ function startStekker(runtime, { vernietigingRepository, processingDelayMs = 0, 
 }
 
 function objectenVan(selectie, van, tot) {
-  return selectie.kandidaten.slice(van, tot).map(({ vernietigingskandidaatId, bronId }) => ({ vernietigingskandidaatId, bronId }));
+  return selectie.kandidaten.slice(van, tot).map(({ vernietigingskandidaatId, identificatie }) => ({ vernietigingskandidaatId, identificatie }));
 }
 
 test('JsonFileStore schrijft atomisch en weigert id\'s die buiten de map kunnen wijzen', (t) => {
@@ -61,7 +61,7 @@ test('selecties, vernietigingen en idempotency-keys overleven een herstart', asy
   const selectie = await eerste.selectieService.startSelectie({ peildatum: '2026-09-25' });
   const verzoek = { selectieId: selectie.selectieId, cockpitTaakId: 'taak-p', besluitReferentie: 'besluit-p' };
   const vernietiging = eerste.vernietigingService.startVernietiging(verzoek, { idempotencyKey: 'taak-p:vernietiging' });
-  eerste.vernietigingService.voegBatchToe(vernietiging.vernietigingId, { batchNummer: 1, objecten: objectenVan(selectie, 0, 2) });
+  eerste.vernietigingService.voegBatchToe(vernietiging.vernietigingId, { batchNummer: 1, vernietigingskandidaten: objectenVan(selectie, 0, 2) });
 
   const herstart = startStekker(runtime);
 
@@ -97,7 +97,7 @@ test('een onderbroken vernietiging wordt hervat zonder batches dubbel te verwerk
     besluitReferentie: 'besluit-h'
   });
   [objectenVan(selectie, 0, 2), objectenVan(selectie, 2, 4), objectenVan(selectie, 4, 5)].forEach((objecten, index) => {
-    eerste.vernietigingService.voegBatchToe(vernietigingId, { batchNummer: index + 1, objecten });
+    eerste.vernietigingService.voegBatchToe(vernietigingId, { batchNummer: index + 1, vernietigingskandidaten: objecten });
   });
 
   // Situatie bij een crash: vrijgegeven (RUNNING) en alleen batch 1 verwerkt.
@@ -139,7 +139,7 @@ test('crash tussen vernietigingslog en resultaten: hervatting meldt SUCCESS, nie
     cockpitTaakId: 'taak-c',
     besluitReferentie: 'besluit-c'
   });
-  eerste.vernietigingService.voegBatchToe(vernietigingId, { batchNummer: 1, objecten });
+  eerste.vernietigingService.voegBatchToe(vernietigingId, { batchNummer: 1, vernietigingskandidaten: objecten });
   echteRepository.save({ ...echteRepository.findById(vernietigingId), status: 'RUNNING', totaalBatches: 1 });
 
   crashBijVolgendeResultaten = true;
@@ -147,7 +147,7 @@ test('crash tussen vernietigingslog en resultaten: hervatting meldt SUCCESS, nie
 
   // De vernietiging staat al in het log, de resultaten zijn nog niet opgeslagen.
   const vernietigdNaCrash = await eerste.zaakSource.leesVernietigd(selectie.snapshotBronPath);
-  assert.equal(objecten.filter((object) => vernietigdNaCrash.get(object.bronId) === vernietigingId).length, 3);
+  assert.equal(objecten.filter((object) => vernietigdNaCrash.get(object.identificatie[0].identificatieKenmerk) === vernietigingId).length, 3);
   assert.equal(echteRepository.findById(vernietigingId).resultaten.length, 0);
 
   const herstart = startStekker(runtime, { processingDelayMs: 5 });
@@ -181,12 +181,12 @@ test('na een herstart weet een nieuwe vernietiging via het log dat een record al
   const objecten = objectenVan(selectie, 0, 1);
   const verzoek = { selectieId: selectie.selectieId, cockpitTaakId: 'taak-l', besluitReferentie: 'besluit-l' };
   const eersteVernietiging = eerste.vernietigingService.startVernietiging(verzoek);
-  eerste.vernietigingService.voegBatchToe(eersteVernietiging.vernietigingId, { batchNummer: 1, objecten });
+  eerste.vernietigingService.voegBatchToe(eersteVernietiging.vernietigingId, { batchNummer: 1, vernietigingskandidaten: objecten });
   assert.equal((await eerste.vernietigingService.vrijgeven(eersteVernietiging.vernietigingId, { aantalBatches: 1, aantalKandidaten: 1 })).status, 'COMPLETED');
 
   const herstart = startStekker(runtime);
   const tweede = herstart.vernietigingService.startVernietiging(verzoek);
-  herstart.vernietigingService.voegBatchToe(tweede.vernietigingId, { batchNummer: 1, objecten });
+  herstart.vernietigingService.voegBatchToe(tweede.vernietigingId, { batchNummer: 1, vernietigingskandidaten: objecten });
   const afgerond = await herstart.vernietigingService.vrijgeven(tweede.vernietigingId, { aantalBatches: 1, aantalKandidaten: 1 });
 
   assert.equal(afgerond.status, 'PARTIAL');

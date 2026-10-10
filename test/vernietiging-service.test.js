@@ -26,7 +26,7 @@ test('vernietigt vrijgegeven kandidaten in de selectie-snapshot', async () => {
   const selectie = await selectieService.startSelectie({ peildatum: '2026-09-25' });
   const objecten = selectie.kandidaten.slice(0, 3).map((kandidaat) => ({
     vernietigingskandidaatId: kandidaat.vernietigingskandidaatId,
-    bronId: kandidaat.bronId
+    identificatie: kandidaat.identificatie
   }));
 
   const vernietiging = vernietigingService.startVernietiging({
@@ -37,7 +37,7 @@ test('vernietigt vrijgegeven kandidaten in de selectie-snapshot', async () => {
 
   vernietigingService.voegBatchToe(vernietiging.vernietigingId, {
     batchNummer: 1,
-    objecten
+    vernietigingskandidaten: objecten
   });
 
   const afgerond = await vernietigingService.vrijgeven(vernietiging.vernietigingId, {
@@ -58,9 +58,9 @@ test('vernietigt vrijgegeven kandidaten in de selectie-snapshot', async () => {
   const vernietigd = await zaakSource.leesVernietigd(selectie.snapshotBronPath);
   const snapshotRecords = await zaakSource.findAllFrom(selectie.snapshotBronPath);
   const defaultRecords = await zaakSource.findAll();
-  const metZelfdeBronIds = (records) => records.filter((record) => objecten.some((object) => object.bronId === record.bronId));
+  const metZelfdeBronIds = (records) => records.filter((record) => objecten.some((object) => bronIdVan(selectie, object) === record.bronId));
 
-  assert.equal(objecten.every((object) => vernietigd.get(object.bronId) === vernietiging.vernietigingId), true);
+  assert.equal(objecten.every((object) => vernietigd.get(bronIdVan(selectie, object)) === vernietiging.vernietigingId), true);
   assert.equal(vernietigd.size, 3);
   assert.equal(metZelfdeBronIds(snapshotRecords).every((record) => record.bronstatus === 'ONVERANDERD'), true);
   assert.equal(metZelfdeBronIds(defaultRecords).every((record) => record.bronstatus === 'ONVERANDERD'), true);
@@ -85,7 +85,7 @@ test('rapporteert NOT_FOUND bij vernietiging van al vernietigde snapshotrecords'
   const selectie = await selectieService.startSelectie({ peildatum: '2026-09-25' });
   const object = {
     vernietigingskandidaatId: selectie.kandidaten[0].vernietigingskandidaatId,
-    bronId: selectie.kandidaten[0].bronId
+    identificatie: selectie.kandidaten[0].identificatie
   };
 
   const eersteVernietiging = vernietigingService.startVernietiging({
@@ -93,7 +93,7 @@ test('rapporteert NOT_FOUND bij vernietiging van al vernietigde snapshotrecords'
     cockpitTaakId: 'taak-test-002',
     besluitReferentie: 'besluit-test-002'
   });
-  vernietigingService.voegBatchToe(eersteVernietiging.vernietigingId, { batchNummer: 1, objecten: [object] });
+  vernietigingService.voegBatchToe(eersteVernietiging.vernietigingId, { batchNummer: 1, vernietigingskandidaten: [object] });
   await vernietigingService.vrijgeven(eersteVernietiging.vernietigingId, { aantalBatches: 1, aantalKandidaten: 1 });
 
   const tweedeVernietiging = vernietigingService.startVernietiging({
@@ -101,7 +101,7 @@ test('rapporteert NOT_FOUND bij vernietiging van al vernietigde snapshotrecords'
     cockpitTaakId: 'taak-test-003',
     besluitReferentie: 'besluit-test-003'
   });
-  vernietigingService.voegBatchToe(tweedeVernietiging.vernietigingId, { batchNummer: 1, objecten: [object] });
+  vernietigingService.voegBatchToe(tweedeVernietiging.vernietigingId, { batchNummer: 1, vernietigingskandidaten: [object] });
   const afgerond = await vernietigingService.vrijgeven(tweedeVernietiging.vernietigingId, {
     aantalBatches: 1,
     aantalKandidaten: 1
@@ -132,7 +132,7 @@ test('levert batchresultaten per batch, ook voordat de vernietiging is verwerkt'
   const selectie = await selectieService.startSelectie({ peildatum: '2026-09-25' });
   const objecten = selectie.kandidaten.slice(0, 5).map((kandidaat) => ({
     vernietigingskandidaatId: kandidaat.vernietigingskandidaatId,
-    bronId: kandidaat.bronId
+    identificatie: kandidaat.identificatie
   }));
   const vernietiging = vernietigingService.startVernietiging({
     selectieId: selectie.selectieId,
@@ -140,8 +140,8 @@ test('levert batchresultaten per batch, ook voordat de vernietiging is verwerkt'
     besluitReferentie: 'besluit-test-004'
   });
 
-  vernietigingService.voegBatchToe(vernietiging.vernietigingId, { batchNummer: 2, objecten: objecten.slice(3) });
-  const ontvangen = vernietigingService.voegBatchToe(vernietiging.vernietigingId, { batchNummer: 1, objecten: objecten.slice(0, 3) });
+  vernietigingService.voegBatchToe(vernietiging.vernietigingId, { batchNummer: 2, vernietigingskandidaten: objecten.slice(3) });
+  const ontvangen = vernietigingService.voegBatchToe(vernietiging.vernietigingId, { batchNummer: 1, vernietigingskandidaten: objecten.slice(0, 3) });
 
   assert.deepEqual(ontvangen, { batchNummer: 1, resultaten: [] });
   assert.deepEqual(
@@ -168,6 +168,11 @@ test('levert batchresultaten per batch, ook voordat de vernietiging is verwerkt'
   );
 });
 
+// De technische sleutel van een aangeboden kandidaat (intern bij de stekker).
+function bronIdVan(selectie, object) {
+  return selectie.kandidaten.find((kandidaat) => kandidaat.vernietigingskandidaatId === object.vernietigingskandidaatId).bronId;
+}
+
 async function maakVernietigingContext(tijdstip) {
   const zaakSource = new CsvZaakSource(stekkerConfig.dataSource.path);
   const selectieService = new SelectieService({
@@ -192,7 +197,7 @@ async function maakVernietigingContext(tijdstip) {
   });
   const object = (index) => ({
     vernietigingskandidaatId: selectie.kandidaten[index].vernietigingskandidaatId,
-    bronId: selectie.kandidaten[index].bronId
+    identificatie: selectie.kandidaten[index].identificatie
   });
 
   return { zaakSource, selectie, vernietiging, vernietigingService, vernietigingRepository, object };
@@ -204,19 +209,19 @@ test('weigert bij aanlevering objecten die niet bij de selectie horen', async ()
   const isValidatieFout = (error) => error.code === 'VALIDATION_ERROR';
 
   assert.throws(
-    () => vernietigingService.voegBatchToe(id, { batchNummer: 1, objecten: [{ vernietigingskandidaatId: 'vk-bestaat-niet', bronId: 'bron-x' }] }),
+    () => vernietigingService.voegBatchToe(id, { batchNummer: 1, vernietigingskandidaten: [{ vernietigingskandidaatId: 'vk-bestaat-niet', identificatie: [{ identificatieKenmerk: 'bron-x', identificatieBron: 'x' }] }] }),
     isValidatieFout
   );
   assert.throws(
-    () => vernietigingService.voegBatchToe(id, { batchNummer: 1, objecten: [{ ...object(0), bronId: object(1).bronId }] }),
+    () => vernietigingService.voegBatchToe(id, { batchNummer: 1, vernietigingskandidaten: [{ ...object(0), identificatie: object(1).identificatie }] }),
     isValidatieFout
   );
   assert.throws(
-    () => vernietigingService.voegBatchToe(id, { batchNummer: 1, objecten: [object(0), object(0)] }),
+    () => vernietigingService.voegBatchToe(id, { batchNummer: 1, vernietigingskandidaten: [object(0), object(0)] }),
     isValidatieFout
   );
   assert.throws(
-    () => vernietigingService.voegBatchToe(id, { batchNummer: 1, objecten: [{ vernietigingskandidaatId: object(0).vernietigingskandidaatId }] }),
+    () => vernietigingService.voegBatchToe(id, { batchNummer: 1, vernietigingskandidaten: [{ vernietigingskandidaatId: object(0).vernietigingskandidaatId }] }),
     isValidatieFout
   );
 
@@ -227,14 +232,14 @@ test('weigert een kandidaat die al in een andere batch is aangeleverd, en accept
   const { vernietiging, vernietigingService, object } = await maakVernietigingContext('2026-09-25T14:10');
   const id = vernietiging.vernietigingId;
 
-  vernietigingService.voegBatchToe(id, { batchNummer: 1, objecten: [object(0), object(1)] });
+  vernietigingService.voegBatchToe(id, { batchNummer: 1, vernietigingskandidaten: [object(0), object(1)] });
 
   assert.throws(
-    () => vernietigingService.voegBatchToe(id, { batchNummer: 2, objecten: [object(2), object(1)] }),
+    () => vernietigingService.voegBatchToe(id, { batchNummer: 2, vernietigingskandidaten: [object(2), object(1)] }),
     (error) => error.code === 'KANDIDAAT_AL_AANGELEVERD'
   );
   assert.deepEqual(
-    vernietigingService.voegBatchToe(id, { batchNummer: 1, objecten: [object(0), object(1)] }),
+    vernietigingService.voegBatchToe(id, { batchNummer: 1, vernietigingskandidaten: [object(0), object(1)] }),
     { batchNummer: 1, resultaten: [] }
   );
   assert.equal(vernietigingService.getVernietiging(id).totaalKandidaten, 2);
@@ -245,7 +250,7 @@ test('vernietigt nooit een bronrecord dat niet bij de kandidaat hoort (vangnet b
     await maakVernietigingContext('2026-09-25T14:20');
   const id = vernietiging.vernietigingId;
   const kandidaatA = object(0);
-  const bronIdB = object(1).bronId;
+  const bronIdB = selectie.kandidaten[1].bronId;
 
   // Omzeilt de controle bij aanlevering, zoals een fout in een toekomstige codewijziging zou doen.
   const opgeslagen = vernietigingRepository.findById(id);
@@ -260,7 +265,7 @@ test('vernietigt nooit een bronrecord dat niet bij de kandidaat hoort (vangnet b
   assert.equal(afgerond.resultaten[0].foutcode, 'BRONID_MISMATCH');
   assert.equal(afgerond.status, 'PARTIAL');
   assert.equal(snapshotRecords.find((record) => record.bronId === bronIdB).bronstatus, 'ONVERANDERD');
-  assert.equal(snapshotRecords.find((record) => record.bronId === kandidaatA.bronId).bronstatus, 'ONVERANDERD');
+  assert.equal(snapshotRecords.find((record) => record.bronId === selectie.kandidaten[0].bronId).bronstatus, 'ONVERANDERD');
 });
 
 async function maakAsyncContext({ processingDelayMs = 30, zaakSourceOverride } = {}) {
@@ -285,7 +290,7 @@ async function maakAsyncContext({ processingDelayMs = 30, zaakSourceOverride } =
   const selectie = await selectieService.startSelectie({ peildatum: '2026-09-25' });
   const object = (index) => ({
     vernietigingskandidaatId: selectie.kandidaten[index].vernietigingskandidaatId,
-    bronId: selectie.kandidaten[index].bronId
+    identificatie: selectie.kandidaten[index].identificatie
   });
   const maakVernietiging = (batches) => {
     const vernietiging = vernietigingService.startVernietiging({
@@ -294,7 +299,7 @@ async function maakAsyncContext({ processingDelayMs = 30, zaakSourceOverride } =
       besluitReferentie: 'besluit-async'
     });
     batches.forEach((objecten, index) => {
-      vernietigingService.voegBatchToe(vernietiging.vernietigingId, { batchNummer: index + 1, objecten });
+      vernietigingService.voegBatchToe(vernietiging.vernietigingId, { batchNummer: index + 1, vernietigingskandidaten: objecten });
     });
     return vernietiging.vernietigingId;
   };
@@ -341,7 +346,7 @@ test('verliest geen updates als twee vernietigingen tegelijk dezelfde snapshot b
   await Promise.all([vernietigingService.wachtOpVerwerking(idA), vernietigingService.wachtOpVerwerking(idB)]);
 
   const vernietigd = await csvSource.leesVernietigd(selectie.snapshotBronPath);
-  const bronIds = [0, 1, 2, 3, 4, 5].map((index) => object(index).bronId);
+  const bronIds = [0, 1, 2, 3, 4, 5].map((index) => selectie.kandidaten[index].bronId);
   assert.equal(bronIds.filter((bronId) => vernietigd.has(bronId)).length, 6);
   assert.deepEqual(new Set(vernietigd.values()), new Set([idA, idB]));
 });
@@ -380,7 +385,7 @@ test('Idempotency-Key bij POST /vernietigingen: zelfde key levert dezelfde verni
       { ...verzoek, besluitReferentie: 'ander-besluit' },
       { idempotencyKey: 'taak-idem:stekker:vernietiging' }
     ),
-    (error) => error.code === 'IDEMPOTENCY_KEY_CONFLICT'
+    (error) => error.code === 'IDEMPOTENCY_KEY_REUSED'
   );
 });
 
@@ -392,7 +397,7 @@ test('Idempotency-Key bij batches en vrijgeven: herhaling na vrijgeven geeft de 
     besluitReferentie: 'besluit-idem-2'
   });
   const id = vernietiging.vernietigingId;
-  const batch = { batchNummer: 1, objecten: [object(0), object(1)] };
+  const batch = { batchNummer: 1, vernietigingskandidaten: [object(0), object(1)] };
   const vrijgave = { aantalBatches: 1, aantalKandidaten: 2 };
 
   vernietigingService.voegBatchToe(id, batch, { idempotencyKey: 'k:batch:1' });
@@ -408,11 +413,11 @@ test('Idempotency-Key bij batches en vrijgeven: herhaling na vrijgeven geeft de 
   // Dezelfde key met andere inhoud is een conflict.
   await assert.rejects(
     vernietigingService.vrijgeven(id, { aantalBatches: 1, aantalKandidaten: 3 }, { idempotencyKey: 'k:vrijgeven' }),
-    (error) => error.code === 'IDEMPOTENCY_KEY_CONFLICT'
+    (error) => error.code === 'IDEMPOTENCY_KEY_REUSED'
   );
   assert.throws(
-    () => vernietigingService.voegBatchToe(id, { batchNummer: 1, objecten: [object(0)] }, { idempotencyKey: 'k:batch:1' }),
-    (error) => error.code === 'IDEMPOTENCY_KEY_CONFLICT'
+    () => vernietigingService.voegBatchToe(id, { batchNummer: 1, vernietigingskandidaten: [object(0)] }, { idempotencyKey: 'k:batch:1' }),
+    (error) => error.code === 'IDEMPOTENCY_KEY_REUSED'
   );
 
   await vernietigingService.wachtOpVerwerking(id);
@@ -429,7 +434,7 @@ test('dezelfde Idempotency-Key op een ander endpoint telt als een andere key', a
     { idempotencyKey: 'zelfde-key' }
   );
 
-  vernietigingService.voegBatchToe(vernietiging.vernietigingId, { batchNummer: 1, objecten: [object(0)] }, { idempotencyKey: 'zelfde-key' });
+  vernietigingService.voegBatchToe(vernietiging.vernietigingId, { batchNummer: 1, vernietigingskandidaten: [object(0)] }, { idempotencyKey: 'zelfde-key' });
   const afgerond = await vernietigingService.vrijgeven(
     vernietiging.vernietigingId,
     { aantalBatches: 1, aantalKandidaten: 1 },
@@ -437,27 +442,6 @@ test('dezelfde Idempotency-Key op een ander endpoint telt als een andere key', a
   );
 
   assert.equal(afgerond.status, 'COMPLETED');
-});
-
-test('met IDEMPOTENCY_KEY_REQUIRED geeft een muterende call zonder key een validatiefout', async () => {
-  const csvSource = new CsvZaakSource(stekkerConfig.dataSource.path);
-  const selectieService = new SelectieService({
-    zaakSource: csvSource,
-    selectieRepository: new InMemorySelectieRepository(),
-    processingDelayMs: 0
-  });
-  const vernietigingService = new VernietigingService({
-    zaakSource: csvSource,
-    selectieService,
-    vernietigingRepository: new InMemoryVernietigingRepository(),
-    processingDelayMs: 0,
-    idempotencyKeyRequired: true
-  });
-  const selectie = await selectieService.startSelectie({ peildatum: '2026-09-25' });
-  const verzoek = { selectieId: selectie.selectieId, cockpitTaakId: 'taak-verplicht', besluitReferentie: 'besluit-verplicht' };
-
-  assert.throws(() => vernietigingService.startVernietiging(verzoek), (error) => error.code === 'VALIDATION_ERROR');
-  assert.ok(vernietigingService.startVernietiging(verzoek, { idempotencyKey: 'verplicht-1' }).vernietigingId);
 });
 
 test('geeft unieke selectie- en vernietigingId\'s, ook bij gelijke tijdstempel', async () => {

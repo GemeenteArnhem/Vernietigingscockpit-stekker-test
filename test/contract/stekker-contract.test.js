@@ -31,6 +31,11 @@ for (const call of calls) {
 
     fouten.push(...contract.validateResponse(call));
 
+    // API Design Rules API-57: elke response meldt de volledige API-versie.
+    if (call.apiVersion !== contract.spec.info.version) {
+      fouten.push(`API-Version is ${call.apiVersion}, spec is ${contract.spec.info.version}`);
+    }
+
     // Elke fout moet herleidbaar zijn: correlatieId en logReference zijn in de spec optioneel,
     // maar de referentie-implementatie vult ze altijd.
     if (call.status >= 400 && !(call.body.correlatieId && call.body.logReference)) {
@@ -50,9 +55,9 @@ async function runSequence() {
       (current, [key, value]) => current.replace(`{${key}}`, encodeURIComponent(value)),
       pathTemplate
     );
-    const response = await fetch(`${baseUrl}${url}${query}`, {
+    const response = await fetch(`${baseUrl}/v2${url}${query}`, {
       method,
-      headers: { ...(body || rawBody ? { 'content-type': 'application/json' } : {}), ...headers },
+      headers: { ...(body || rawBody ? { 'content-type': 'application/json' } : {}), ...(method === 'POST' ? { 'Idempotency-Key': crypto.randomUUID() } : {}), ...headers },
       body: rawBody ?? (body ? JSON.stringify(body) : undefined)
     });
     const result = {
@@ -61,7 +66,8 @@ async function runSequence() {
       status: response.status,
       expectedStatus: expectedStatus ?? contract.successStatus(method, pathTemplate),
       verwacht: verwacht ?? 'succes',
-      body: await response.json()
+      apiVersion: response.headers.get('api-version'),
+      body: response.headers.get('content-type')?.includes('xml') ? await response.text() : await response.json()
     };
     recorded.push(result);
     return result;
@@ -76,9 +82,9 @@ async function runSequence() {
     );
     assert.equal(selectieStatus(selectie.body), 'READY', 'Selectie werd niet READY; contractflow kan niet verder.');
 
-    const pagina = await call('GET', '/selecties/{selectieId}/objecten', { selectieId }, {});
+    const pagina = await call('GET', '/selecties/{selectieId}/vernietigingskandidaten', { selectieId }, {});
     const kandidaten = (pagina.body.items ?? pagina.body.objecten).slice(0, 3);
-    const objecten = kandidaten.map(({ vernietigingskandidaatId, bronId }) => ({ vernietigingskandidaatId, bronId }));
+    const objecten = kandidaten.map(({ vernietigingskandidaatId, identificatie }) => ({ vernietigingskandidaatId, identificatie }));
 
     const vernietigingStart = await call('POST', '/vernietigingen', {}, {
       body: {
@@ -91,7 +97,7 @@ async function runSequence() {
     const vernietigingId = vernietigingStart.body.vernietigingId;
 
     await call('POST', '/vernietigingen/{vernietigingId}/batches', { vernietigingId }, {
-      body: { batchNummer: 1, objecten }
+      body: { batchNummer: 1, vernietigingskandidaten: objecten }
     });
     await call('POST', '/vernietigingen/{vernietigingId}/vrijgeven', { vernietigingId }, {
       body: { aantalBatches: 1, aantalKandidaten: objecten.length }
@@ -102,6 +108,16 @@ async function runSequence() {
     );
     await call('GET', '/vernietigingen/{vernietigingId}/batches', { vernietigingId });
     await call('GET', '/vernietigingen/{vernietigingId}/batches/{batchNummer}', { vernietigingId, batchNummer: 1 });
+    await call('GET', '/vernietigingen/{vernietigingId}/specificaties/{vernietigingskandidaatId}', {
+      vernietigingId,
+      vernietigingskandidaatId: kandidaten[0].vernietigingskandidaatId
+    }, { verwacht: 'MDTO-XML-specificatie' });
+    await call('POST', '/selecties', {}, {
+      body: { peildatum: '2026-09-25' },
+      headers: { 'Idempotency-Key': '' },
+      expectedStatus: 400,
+      verwacht: '400 Fout (Idempotency-Key ontbreekt)'
+    });
 
     // Foutpaden: de stekker moet het Fout-schema met een gedocumenteerde status teruggeven.
     await call('GET', '/selecties/{selectieId}', { selectieId: 'bestaat-niet' }, { expectedStatus: 404, verwacht: '404 Fout' });
@@ -109,10 +125,10 @@ async function runSequence() {
     await call('POST', '/vernietigingen', {}, { body: { selectieId }, expectedStatus: 400, verwacht: '400 Fout' });
     await call('POST', '/selecties', {}, { rawBody: '{"peildatum":', expectedStatus: 400, verwacht: '400 Fout (ongeldige JSON)' });
     await call('POST', '/selecties', {}, { body: { peildatum: '2026-13-40' }, expectedStatus: 400, verwacht: '400 Fout (ongeldige peildatum)' });
-    await call('GET', '/selecties/{selectieId}/objecten', { selectieId }, { query: '?limit=501', expectedStatus: 400, verwacht: '400 Fout (limit > 500)' });
-    const eerstePagina = await call('GET', '/selecties/{selectieId}/objecten', { selectieId }, { query: '?limit=50', verwacht: 'pagina met nextCursor' });
+    await call('GET', '/selecties/{selectieId}/vernietigingskandidaten', { selectieId }, { query: '?limit=501', expectedStatus: 400, verwacht: '400 Fout (limit > 500)' });
+    const eerstePagina = await call('GET', '/selecties/{selectieId}/vernietigingskandidaten', { selectieId }, { query: '?limit=50', verwacht: 'pagina met nextCursor' });
     assert.ok(eerstePagina.body.nextCursor, 'Een pagina met meer resultaten hoort een nextCursor te hebben.');
-    await call('GET', '/selecties/{selectieId}/objecten', { selectieId }, {
+    await call('GET', '/selecties/{selectieId}/vernietigingskandidaten', { selectieId }, {
       query: `?limit=50&cursor=${eerstePagina.body.nextCursor}`,
       verwacht: 'pagina via cursor'
     });
@@ -141,19 +157,19 @@ async function runSequence() {
       verwacht: '409 Fout (Idempotency-Key met andere inhoud)'
     });
     const [eerste, volgende] = (pagina.body.items ?? pagina.body.objecten).slice(3, 5)
-      .map(({ vernietigingskandidaatId, bronId }) => ({ vernietigingskandidaatId, bronId }));
+      .map(({ vernietigingskandidaatId, identificatie }) => ({ vernietigingskandidaatId, identificatie }));
 
     await call('POST', '/vernietigingen/{vernietigingId}/batches', { vernietigingId: tweedeId }, {
-      body: { batchNummer: 1, objecten: [{ ...eerste, bronId: volgende.bronId }] },
+      body: { batchNummer: 1, vernietigingskandidaten: [{ ...eerste, identificatie: volgende.identificatie }] },
       expectedStatus: 400,
-      verwacht: '400 Fout (bronId hoort niet bij kandidaat)'
+      verwacht: '400 Fout (identificatie hoort niet bij kandidaat)'
     });
     await call('POST', '/vernietigingen/{vernietigingId}/batches', { vernietigingId: tweedeId }, {
-      body: { batchNummer: 1, objecten: [eerste] },
+      body: { batchNummer: 1, vernietigingskandidaten: [eerste] },
       verwacht: 'geldige batch'
     });
     await call('POST', '/vernietigingen/{vernietigingId}/batches', { vernietigingId: tweedeId }, {
-      body: { batchNummer: 2, objecten: [volgende, eerste] },
+      body: { batchNummer: 2, vernietigingskandidaten: [volgende, eerste] },
       expectedStatus: 409,
       verwacht: '409 Fout (kandidaat al aangeleverd)'
     });

@@ -14,8 +14,10 @@ export function selectielijstjaarVoorZaakjaar(zaakjaar) {
   throw new Error(`Geen selectielijstmapping voor zaakjaar ${zaakjaar}.`);
 }
 
-export function isVernietigbaarOpPeildatum(kandidaat, peildatum) {
-  return kandidaat.waardering === 'VERNIETIGEN'
+// Alleen waardering V (Tijdelijk te bewaren) met een verstreken bewaartermijn is vernietigbaar.
+// Met `leverNietV` (testscenario) gaan ook B-kandidaten mee, zodat de Cockpit die kan uitsluiten.
+export function isVernietigbaarOpPeildatum(kandidaat, peildatum, { leverNietV = false } = {}) {
+  return (kandidaat.waardering.begripCode === 'V' || leverNietV)
     && kandidaat.statusVernietigingskandidaat === 'SELECTED'
-    && kandidaat.vernietigingsdatum <= peildatum;
+    && kandidaat.bewaartermijn.termijnEinddatum <= peildatum;
 }

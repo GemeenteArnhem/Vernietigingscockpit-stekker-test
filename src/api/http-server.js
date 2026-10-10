@@ -6,12 +6,16 @@ import { GEEN_SCENARIO } from '../config/scenario-config.js';
 import { stekkerConfig } from '../config/stekker-config.js';
 import { AuthFout, createAuthenticator } from './jwt-auth.js';
 import {
+  toBatchResultaatResponse,
   toKandidatenPaginaResponse,
   toSelectieResponse,
   toVernietigingResponse
 } from './response-mappers.js';
 
 const MAX_LIMIT = 500;
+// Major versie in de URI (API Design Rules API-20); het volledige versienummer in de
+// header API-Version (API-57).
+const API_PREFIX = '/v2';
 const MAX_CORRELATIE_ID_LENGTE = 200;
 
 export function createHttpServer({
@@ -30,6 +34,7 @@ export function createHttpServer({
     // een fout aan beide kanten met hetzelfde kenmerk terug te vinden is.
     const correlatieId = leesCorrelatieId(request) ?? crypto.randomUUID();
     response.setHeader('X-Correlation-ID', correlatieId);
+    response.setHeader('API-Version', stekkerConfig.apiVersie);
 
     if (logRequests) {
       logRequest(request, response, correlatieId);
@@ -49,10 +54,17 @@ export function createHttpServer({
         });
       }
 
-      const endpoint = endpointVan(request.method, url.pathname);
+      // Alles behalve /health valt onder /v2; het pad zonder prefix is het pad uit de spec.
+      const pad = url.pathname.startsWith(`${API_PREFIX}/`) ? url.pathname.slice(API_PREFIX.length) : undefined;
+
+      if (pad === undefined) {
+        throw new ResourceNotFoundError('NOT_FOUND', `Endpoint niet gevonden; de API staat onder ${API_PREFIX}.`);
+      }
+
+      const endpoint = endpointVan(request.method, pad);
       await authenticator.authenticeer(request, endpoint);
 
-      const transportFout = bepaalTransportFout(scenario.http, transportTellers, request.method, url.pathname, endpoint);
+      const transportFout = bepaalTransportFout(scenario.http, transportTellers, request.method, pad, endpoint);
 
       if (scenario.http.delayMs > 0) {
         await sleep(scenario.http.delayMs);
@@ -62,12 +74,20 @@ export function createHttpServer({
         throw transportFout;
       }
 
-      const resultaat = await routeer({ request, url, readBody, selectieService, vernietigingService });
+      if (request.method === 'POST' && endpoint) {
+        vereisIdempotencyKey(request);
+      }
+
+      const resultaat = await routeer({ request, pad, url, readBody, selectieService, vernietigingService });
 
       // Faalmodus 'na': het verzoek is wél verwerkt, maar het antwoord gaat 'verloren'.
       // Precies de situatie waarvoor de Cockpit een Idempotency-Key meestuurt.
       if (transportFout) {
         throw transportFout;
+      }
+
+      if (resultaat.xml !== undefined) {
+        return sendXml(response, resultaat.status, resultaat.xml);
       }
 
       return sendJson(response, resultaat.status, resultaat.payload);
@@ -94,17 +114,30 @@ function logRequest(request, response, correlatieId) {
   });
 }
 
-async function routeer({ request, url, readBody, selectieService, vernietigingService }) {
-  if (request.method === 'POST' && url.pathname === '/selecties') {
+// Stekker API v2: Idempotency-Key is verplicht op alle muterende verzoeken (ADR-0004).
+function vereisIdempotencyKey(request) {
+  const key = request.headers['idempotency-key'];
+
+  if (typeof key !== 'string' || !key.trim()) {
+    throw new ValidationError('Idempotency-Key is verplicht op dit verzoek.', 'IDEMPOTENCY_KEY_MISSING');
+  }
+
+  if (key.length > 200) {
+    throw new ValidationError('Idempotency-Key is langer dan 200 tekens.', 'IDEMPOTENCY_KEY_INVALID');
+  }
+}
+
+async function routeer({ request, pad, url, readBody, selectieService, vernietigingService }) {
+  if (request.method === 'POST' && pad === '/selecties') {
     const body = await readBody();
     const selectie = await selectieService.startSelectie({
       peildatum: body.peildatum ?? undefined
-    });
+    }, { idempotencyKey: request.headers['idempotency-key'] });
 
     return antwoord(202, toSelectieResponse(selectie));
   }
 
-  if (request.method === 'POST' && url.pathname === '/vernietigingen') {
+  if (request.method === 'POST' && pad === '/vernietigingen') {
     const body = await readBody();
     const vernietiging = vernietigingService.startVernietiging({
       selectieId: body.selectieId,
@@ -116,7 +149,7 @@ async function routeer({ request, url, readBody, selectieService, vernietigingSe
     return antwoord(202, toVernietigingResponse(vernietiging));
   }
 
-  const vernietigingMatch = url.pathname.match(/^\/vernietigingen\/([^/]+)$/);
+  const vernietigingMatch = pad.match(/^\/vernietigingen\/([^/]+)$/);
   if (request.method === 'GET' && vernietigingMatch) {
     const vernietiging = vernietigingService.getVernietiging(vernietigingMatch[1]);
 
@@ -127,22 +160,27 @@ async function routeer({ request, url, readBody, selectieService, vernietigingSe
     return antwoord(200, toVernietigingResponse(vernietiging));
   }
 
-  const batchMatch = url.pathname.match(/^\/vernietigingen\/([^/]+)\/batches$/);
+  const batchMatch = pad.match(/^\/vernietigingen\/([^/]+)\/batches$/);
   if (request.method === 'POST' && batchMatch) {
     const body = await readBody();
     const batchResultaat = vernietigingService.voegBatchToe(batchMatch[1], {
       batchNummer: body.batchNummer,
-      objecten: body.objecten
+      vernietigingskandidaten: body.vernietigingskandidaten
     }, { idempotencyKey: request.headers['idempotency-key'] });
 
-    return antwoord(202, batchResultaat);
+    return antwoord(202, toBatchResultaatResponse(batchResultaat));
   }
 
   if (request.method === 'GET' && batchMatch) {
-    return antwoord(200, vernietigingService.getBatchResultaten(batchMatch[1]));
+    return antwoord(200, vernietigingService.getBatchResultaten(batchMatch[1]).map(toBatchResultaatResponse));
   }
 
-  const batchNummerMatch = url.pathname.match(/^\/vernietigingen\/([^/]+)\/batches\/([^/]+)$/);
+  const specificatieMatch = pad.match(/^\/vernietigingen\/([^/]+)\/specificaties\/([^/]+)$/);
+  if (request.method === 'GET' && specificatieMatch) {
+    return { status: 200, xml: vernietigingService.getSpecificatie(specificatieMatch[1], decodeURIComponent(specificatieMatch[2])) };
+  }
+
+  const batchNummerMatch = pad.match(/^\/vernietigingen\/([^/]+)\/batches\/([^/]+)$/);
   if (request.method === 'GET' && batchNummerMatch) {
     // Een ongeldig batchnummer verwijst naar een batch die niet bestaat; de spec kent hier geen 400.
     const batchNummer = Number(batchNummerMatch[2]);
@@ -151,10 +189,10 @@ async function routeer({ request, url, readBody, selectieService, vernietigingSe
       throw new ResourceNotFoundError('BATCH_NOT_FOUND', `Batch ${batchNummerMatch[2]} niet gevonden.`);
     }
 
-    return antwoord(200, vernietigingService.getBatchResultaat(batchNummerMatch[1], batchNummer));
+    return antwoord(200, toBatchResultaatResponse(vernietigingService.getBatchResultaat(batchNummerMatch[1], batchNummer)));
   }
 
-  const vrijgevenMatch = url.pathname.match(/^\/vernietigingen\/([^/]+)\/vrijgeven$/);
+  const vrijgevenMatch = pad.match(/^\/vernietigingen\/([^/]+)\/vrijgeven$/);
   if (request.method === 'POST' && vrijgevenMatch) {
     const body = await readBody();
     const vernietiging = await vernietigingService.vrijgeven(vrijgevenMatch[1], {
@@ -165,7 +203,7 @@ async function routeer({ request, url, readBody, selectieService, vernietigingSe
     return antwoord(202, toVernietigingResponse(vernietiging));
   }
 
-  const selectieMatch = url.pathname.match(/^\/selecties\/([^/]+)$/);
+  const selectieMatch = pad.match(/^\/selecties\/([^/]+)$/);
   if (request.method === 'GET' && selectieMatch) {
     const selectie = selectieService.getSelectie(selectieMatch[1]);
 
@@ -176,9 +214,9 @@ async function routeer({ request, url, readBody, selectieService, vernietigingSe
     return antwoord(200, toSelectieResponse(selectie));
   }
 
-  const objectenMatch = url.pathname.match(/^\/selecties\/([^/]+)\/objecten$/);
-  if (request.method === 'GET' && objectenMatch) {
-    const selectieId = objectenMatch[1];
+  const kandidatenMatch = pad.match(/^\/selecties\/([^/]+)\/vernietigingskandidaten$/);
+  if (request.method === 'GET' && kandidatenMatch) {
+    const selectieId = kandidatenMatch[1];
     const cursor = url.searchParams.get('cursor');
 
     if (cursor !== null && url.searchParams.has('offset')) {
@@ -332,6 +370,14 @@ function leesGeheelGetal(searchParams, naam, { standaard, minimum, maximum = Num
   return waarde;
 }
 
+function sendXml(response, statusCode, xml) {
+  response.writeHead(statusCode, {
+    'content-type': 'application/xml; charset=utf-8',
+    'content-length': Buffer.byteLength(xml)
+  });
+  response.end(xml);
+}
+
 function sendJson(response, statusCode, payload) {
   const body = JSON.stringify(payload, null, 2);
   response.writeHead(statusCode, {
@@ -387,13 +433,14 @@ async function readJsonBody(request, maxBodyBytes) {
 const ENDPOINTS = [
   ['POST', /^\/selecties$/, 'POST /selecties'],
   ['GET', /^\/selecties\/[^/]+$/, 'GET /selecties/{selectieId}'],
-  ['GET', /^\/selecties\/[^/]+\/objecten$/, 'GET /selecties/{selectieId}/objecten'],
+  ['GET', /^\/selecties\/[^/]+\/vernietigingskandidaten$/, 'GET /selecties/{selectieId}/vernietigingskandidaten'],
   ['POST', /^\/vernietigingen$/, 'POST /vernietigingen'],
   ['GET', /^\/vernietigingen\/[^/]+$/, 'GET /vernietigingen/{vernietigingId}'],
   ['POST', /^\/vernietigingen\/[^/]+\/batches$/, 'POST /vernietigingen/{vernietigingId}/batches'],
   ['GET', /^\/vernietigingen\/[^/]+\/batches$/, 'GET /vernietigingen/{vernietigingId}/batches'],
   ['GET', /^\/vernietigingen\/[^/]+\/batches\/[^/]+$/, 'GET /vernietigingen/{vernietigingId}/batches/{batchNummer}'],
-  ['POST', /^\/vernietigingen\/[^/]+\/vrijgeven$/, 'POST /vernietigingen/{vernietigingId}/vrijgeven']
+  ['POST', /^\/vernietigingen\/[^/]+\/vrijgeven$/, 'POST /vernietigingen/{vernietigingId}/vrijgeven'],
+  ['GET', /^\/vernietigingen\/[^/]+\/specificaties\/[^/]+$/, 'GET /vernietigingen/{vernietigingId}/specificaties/{vernietigingskandidaatId}']
 ];
 
 const TRANSPORT_FOUTCODES = {

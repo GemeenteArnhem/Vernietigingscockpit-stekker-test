@@ -9,16 +9,19 @@ import { FileVernietigingRepository } from './infrastructure/repositories/file-v
 import { RuntimeLock } from './infrastructure/runtime-lock.js';
 
 const zaakSource = new CsvZaakSource(stekkerConfig.dataSource.path);
+// Eén idempotentie-opslag voor alle endpoints; de scope (methode + pad) houdt ze uit elkaar.
+const idempotencyRepository = new FileIdempotencyRepository(stekkerConfig.runtime.idempotencyPath);
 const selectieService = new SelectieService({
   zaakSource,
-  selectieRepository: new FileSelectieRepository(stekkerConfig.runtime.selectiesPath)
+  selectieRepository: new FileSelectieRepository(stekkerConfig.runtime.selectiesPath),
+  idempotencyRepository
 });
 
 const vernietigingService = new VernietigingService({
   zaakSource,
   selectieService,
   vernietigingRepository: new FileVernietigingRepository(stekkerConfig.runtime.vernietigingenPath),
-  idempotencyRepository: new FileIdempotencyRepository(stekkerConfig.runtime.idempotencyPath)
+  idempotencyRepository
 });
 
 // Eén instantie per runtime-map: eerst de lock, pas daarna hervatten en requests aannemen.
