@@ -10,3 +10,4 @@ import './testdata.test.js';
 import './runtime-lock.test.js';
 import './api-v2.test.js';
 import './onderdelen.test.js';
+import './selectielijst.test.js';

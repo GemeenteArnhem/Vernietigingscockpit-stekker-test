@@ -450,7 +450,7 @@ components:
       required: true
       schema:
         type: string
-      description: Stabiele identificatie van de vernietigingskandidaat.
+      description: Identificatie van de vernietigingskandidaat, uniek binnen de selectie waarop de vernietiging is gebaseerd (ADR-0007).
 
     BatchNummer:
       in: path
@@ -651,6 +651,54 @@ components:
           type: string
           format: date
 
+    Informatiecategorie:
+      type: object
+      description: |
+        MDTO informatiecategorie: de categorie uit de vastgestelde selectielijst.
+        `begripCode` = codering van de categorie in de selectielijst, `begripLabel` = titel van de
+        categorie, `begripBegrippenlijst` = de selectielijst zelf (ADR-0008, DR-SL-05).
+        Een afwijkende norm (hotspotlijst, specifieke wetgeving) gaat via `informatiecategorieAfwijking`.
+      required:
+        - begripLabel
+        - begripBegrippenlijst
+      properties:
+        begripLabel:
+          type: string
+        begripCode:
+          type: string
+        begripBegrippenlijst:
+          $ref: '#/components/schemas/Selectielijstverwijzing'
+
+    Selectielijstverwijzing:
+      type: object
+      description: |
+        MDTO verwijzingGegevens naar een vastgestelde selectielijst (ADR-0008).
+        `verwijzingNaam` = titel van de selectielijst (informatief).
+        `verwijzingIdentificatie.identificatieKenmerk` = de selectielijstcode uit de begrippenlijst
+        Cockpit-selectielijsten (`designrules/begrippenlijsten/cockpit-selectielijsten.md`),
+        bijvoorbeeld `GEM-2020`; `identificatieBron` = `Cockpit-selectielijsten`.
+        Een code die aan het patroon voldoet maar niet in het register staat, levert in de
+        cockpit een waarschuwing op; de kandidaat blijft (DR-SL-06).
+      required:
+        - verwijzingNaam
+        - verwijzingIdentificatie
+      properties:
+        verwijzingNaam:
+          type: string
+        verwijzingIdentificatie:
+          type: object
+          required:
+            - identificatieKenmerk
+            - identificatieBron
+          properties:
+            identificatieKenmerk:
+              type: string
+              description: Selectielijstcode `CODE-YYYY` of `CODE-YYYY.VV` (DR-SL-01).
+              pattern: '^[A-Z][A-Z0-9]{1,11}-[0-9]{4}(\.[0-9]{2})?$'
+            identificatieBron:
+              type: string
+              enum: [Cockpit-selectielijsten]
+
     InformatiecategorieAfwijking:
       type: object
       description: |
@@ -716,6 +764,7 @@ components:
         totaalObjecten:
           type: integer
           minimum: 0
+          description: Som van `aantalObjecten` van de kandidaten in de selectie.
         totaalBetrokkenen:
           type: integer
           minimum: 0
@@ -768,7 +817,11 @@ components:
       properties:
         vernietigingskandidaatId:
           type: string
-          description: Stabiele identificatie van de vernietigingskandidaat over selectie, beoordeling, vernietiging en resultaatverwerking (eigen begrip).
+          description: |
+            Identificatie van de kandidaat (eigen begrip), uniek en stabiel binnen één selectie en in de
+            vernietigingen en resultaten die op die selectie gebaseerd zijn. Hergebruik voor hetzelfde object
+            in een volgende selectie mag, maar de cockpit geeft daar geen betekenis aan; hetzelfde object
+            herken je aan `identificatie` (ADR-0007, DR-01 en DR-02).
         identificatie:
           type: array
           minItems: 1
@@ -798,13 +851,7 @@ components:
         bewaartermijn:
           $ref: '#/components/schemas/Bewaartermijn'
         informatiecategorie:
-          allOf:
-            - $ref: '#/components/schemas/begripGegevens'
-          description: |
-            MDTO informatiecategorie: de categorie uit de vastgestelde selectielijst (of hotspotlijst).
-            `begripCode` = codering in de selectielijst, `begripLabel` = titel,
-            `begripBegrippenlijst` = de selectielijst, met `verwijzingIdentificatie` voor
-            identificatie en versie (bij ZGW: de URL van de selectielijstklasse).
+          $ref: '#/components/schemas/Informatiecategorie'
         informatiecategorieAfwijking:
           $ref: '#/components/schemas/InformatiecategorieAfwijking'
         isOnderdeelVan:
@@ -825,7 +872,10 @@ components:
         aantalObjecten:
           type: integer
           minimum: 0
-          description: Cockpituitbreiding. Aantal onderliggende informatieobjecten.
+          description: |
+            Cockpituitbreiding. Aantal direct onderliggende informatieobjecten in de momentopname,
+            gelijk aan het aantal `bevatOnderdeel` in de specificatie. Dieper liggende niveaus tellen
+            niet mee; een archiefstuk heeft 0 (ADR-0007, DR-04).
         aantalBetrokkenen:
           type: integer
           minimum: 0
@@ -878,8 +928,8 @@ components:
           begripBegrippenlijst:
             verwijzingNaam: Selectielijst gemeenten en intergemeentelijke organen 2020
             verwijzingIdentificatie:
-              identificatieKenmerk: selectielijst-gemeenten-2020
-              identificatieBron: Nationaal Archief
+              identificatieKenmerk: GEM-2020
+              identificatieBron: Cockpit-selectielijsten
         aantalObjecten: 4
         aantalBetrokkenen: 1
 
@@ -991,6 +1041,7 @@ components:
         totaalObjecten:
           type: integer
           minimum: 0
+          description: Som van `aantalObjecten` van de aangeboden kandidaten.
         totaalBatches:
           type: integer
           minimum: 0

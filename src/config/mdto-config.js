@@ -38,7 +38,8 @@ export const Begrippenlijst = Object.freeze({
   beperkingGebruik: 'Begrippenlijst BeperkingGebruik MDTO',
   termijntriggers: 'Cockpit-termijntriggers',
   dekkingInTijdtypen: 'Cockpit-dekkingInTijdtypen',
-  vernietigingsmethoden: 'Cockpit-vernietigingsmethoden'
+  vernietigingsmethoden: 'Cockpit-vernietigingsmethoden',
+  selectielijsten: 'Cockpit-selectielijsten'
 });
 
 export function begrip(begripLabel, begrippenlijst, begripCode) {

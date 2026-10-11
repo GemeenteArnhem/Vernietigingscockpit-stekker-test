@@ -1,4 +1,5 @@
 import { Begrippenlijst, begrip, STANDAARD_MDTO } from '../config/mdto-config.js';
+import { selectielijstcode } from './selectielijst.js';
 
 const REQUIRED_FIELDS = [
   'vernietigingskandidaatId',
@@ -88,8 +89,8 @@ export function mapBronrecordToKandidaat(record, mdto = STANDAARD_MDTO) {
       begripBegrippenlijst: {
         verwijzingNaam: record.selectielijst,
         verwijzingIdentificatie: {
-          identificatieKenmerk: `selectielijst-${record.selectielijstjaar}`,
-          identificatieBron: 'Selectielijsten (teststekker)'
+          identificatieKenmerk: selectielijstcode(record.selectielijstjaar),
+          identificatieBron: Begrippenlijst.selectielijsten
         }
       }
     },

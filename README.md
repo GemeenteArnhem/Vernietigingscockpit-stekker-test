@@ -34,13 +34,13 @@ De zaken gebruiken `ZTC` als classificatieschema. De kolommen sluiten aan op het
 
 ## Selectielijstmapping
 
-De testset gebruikt de volgende mapping van zaakjaar naar selectielijstjaar:
+De testset gebruikt de volgende mapping van zaakjaar naar selectielijstjaar. De stekker levert de selectielijstcode uit de begrippenlijst Cockpit-selectielijsten (ADR-0008) als `informatiecategorie.begripBegrippenlijst.verwijzingIdentificatie`, met `identificatieBron` = `Cockpit-selectielijsten`:
 
-| Zaakjaar | Selectielijstjaar |
-| --- | --- |
-| 1996-2016 | 2012 |
-| 2017-2019 | 2017 |
-| 2020-heden | 2020 |
+| Zaakjaar | Selectielijstjaar | Selectielijstcode |
+| --- | --- | --- |
+| 1996-2016 | 2012 | `GEM-2012` |
+| 2017-2019 | 2017 | `GEM-2017` |
+| 2020-heden | 2020 | `GEM-2020` |
 
 Alle records hebben `waardering` = `VERNIETIGEN` en `statusVernietigingskandidaat` = `SELECTED`, zodat de eerste stekkerstap zich kan richten op inlezen, valideren, selecteren en mappen.
 
